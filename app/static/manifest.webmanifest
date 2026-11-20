@@ -1,0 +1,9 @@
+{
+  "name": "vinyl2discogs",
+  "short_name": "vinyl2discogs",
+  "start_url": "/#new",
+  "display": "standalone",
+  "background_color": "#16130f",
+  "theme_color": "#16130f",
+  "icons": []
+}

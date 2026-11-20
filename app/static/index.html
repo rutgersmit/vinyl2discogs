@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16130f">
+<title>vinyl2discogs</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<style>
+  :root {
+    --bg: #16130f; --panel: #211d18; --panel2: #2b261f; --line: #3a332a;
+    --text: #efe7da; --muted: #a89d8c; --accent: #e8a33d; --accent-ink: #1b1306;
+    --ok: #7cbf7a; --err: #e46d5c; --info: #7aa6d6;
+    --r: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); }
+  header { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px; padding-top: max(10px, env(safe-area-inset-top)); }
+  header .logo { font-weight: 700; letter-spacing: .02em; margin-right: auto; display: flex; align-items: center; gap: 8px; }
+  header .logo i { width: 22px; height: 22px; border-radius: 50%; display: inline-block;
+    background: radial-gradient(circle, var(--accent) 0 18%, #111 19% 100%); box-shadow: 0 0 0 2px #333 inset; }
+  nav a { text-decoration: none; color: var(--muted); padding: 6px 10px; border-radius: 999px; font-size: 14px; position: relative; }
+  nav a.active { background: var(--panel2); color: var(--text); }
+  nav .badge { background: var(--accent); color: var(--accent-ink); border-radius: 999px; font-size: 11px; font-weight: 700;
+    padding: 0 6px; margin-left: 4px; }
+  main { max-width: 760px; margin: 0 auto; padding: 14px 14px 290px; }
+  h2 { font-size: 18px; margin: 4px 0 12px; }
+  h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 20px 0 8px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  button, .btn { appearance: none; border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+    padding: 10px 14px; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.ghost { background: transparent; }
+  button.danger { color: var(--err); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select, textarea { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 9px 10px; font: inherit; }
+  textarea { min-height: 64px; resize: vertical; }
+  label.f { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+
+  /* photo slots */
+  .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .slot { position: relative; aspect-ratio: 1; border: 2px dashed var(--line); border-radius: var(--r); background: var(--panel);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; overflow: hidden; cursor: pointer; }
+  .slot.has { border-style: solid; border-color: var(--accent); }
+  .slot img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .slot .lbl { position: relative; z-index: 1; font-weight: 700; }
+  .slot .sub { position: relative; z-index: 1; font-size: 11px; color: var(--muted); padding: 0 6px; }
+  .slot.has .lbl { position: absolute; bottom: 0; left: 0; right: 0; background: #000a; font-size: 12px; padding: 3px; }
+  .slot.has .sub { display: none; }
+  .slot input { display: none; }
+  .slot .x { position: absolute; top: 4px; right: 4px; z-index: 2; background: #000b; border: 0; color: #fff; border-radius: 50%;
+    width: 26px; height: 26px; padding: 0; font-size: 14px; display: none; }
+  .slot.has .x { display: block; }
+
+  /* list */
+  .list { display: flex; flex-direction: column; gap: 8px; }
+  .li { display: flex; gap: 10px; align-items: center; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--r); padding: 8px; text-decoration: none; color: inherit; }
+  .li img, .li .ph { width: 54px; height: 54px; border-radius: 8px; object-fit: cover; background: var(--panel2); flex: none; }
+  .li .t { font-weight: 600; }
+  .st { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--panel2); color: var(--muted); white-space: nowrap; }
+  .st.review { background: var(--accent); color: var(--accent-ink); }
+  .st.added { background: #24402a; color: var(--ok); }
+  .st.error { background: #4a221d; color: var(--err); }
+  .st.pending, .st.processing { background: #1f2f44; color: var(--info); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; font-size: 13px; color: var(--muted); cursor: pointer; background: none; font-weight: 500; }
+  .chip.on { background: var(--panel2); color: var(--text); border-color: var(--muted); }
+
+  /* item */
+  .photos { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+  .photos img { height: 120px; border-radius: 8px; border: 1px solid var(--line); cursor: zoom-in; }
+  .cand { display: flex; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); cursor: pointer; }
+  .cand.sel { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .cand img, .cand .ph { width: 72px; height: 72px; border-radius: 6px; object-fit: cover; background: var(--panel2); flex: none; }
+  .cand .t { font-weight: 650; }
+  .score { margin-left: auto; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .why { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .why span { font-size: 11px; background: var(--panel2); border-radius: 4px; padding: 1px 6px; color: var(--muted); }
+  .why span.m { color: var(--ok); }
+  .mx { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--muted); margin-top: 4px; word-break: break-word; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); z-index: 20;
+    padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .bar .inner { max-width: 760px; margin: 0 auto; }
+  .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent); animation: s 0.9s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  .toast { position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+    padding: 10px 16px; border-radius: 10px; font-weight: 600; z-index: 50; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  .toast.show { opacity: 1; }
+  .warn { border-color: var(--err); color: var(--err); }
+  details summary { cursor: pointer; color: var(--muted); }
+  .lightbox { position: fixed; inset: 0; background: #000e; z-index: 60; display: flex; align-items: center; justify-content: center; }
+  .lightbox img { max-width: 100%; max-height: 100%; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><i></i>vinyl2discogs</div>
+  <nav>
+    <a href="#new" data-nav="new">New</a>
+    <a href="#queue" data-nav="queue">Queue<span class="badge" id="badge" hidden></span></a>
+  </nav>
+</header>
+<main id="view"></main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("v2d." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("v2d." + k, JSON.stringify(v)); } catch {} },
+};
+const DEFAULT_MEDIA = ["Mint (M)", "Near Mint (NM or M-)", "Very Good Plus (VG+)", "Very Good (VG)", "Good Plus (G+)", "Good (G)", "Fair (F)", "Poor (P)"];
+const DEFAULT_SLEEVE = [...DEFAULT_MEDIA, "Generic", "Not Graded", "No Cover"];
+const STATUS_LABEL = { pending: "queued", processing: "processing", review: "review", added: "added", not_found: "not in Discogs", skipped: "skipped", error: "error" };
+
+let S = { status: null, poll: null, queueFilter: store.get("queueFilter", "review") };
+
+async function api(path, opts = {}) {
+  const o = { ...opts };
+  if (o.json !== undefined) { o.body = JSON.stringify(o.json); o.headers = { "Content-Type": "application/json" }; o.method = o.method || "POST"; delete o.json; }
+  const r = await fetch(path, o);
+  let data = null; try { data = await r.json(); } catch {}
+  if (!r.ok) { const e = new Error((data && data.detail) || r.statusText); e.status = r.status; e.data = data; throw e; }
+  return data;
+}
+function toast(msg, ms = 2200) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), ms); }
+function stopPoll() { if (S.poll) { clearTimeout(S.poll); S.poll = null; } }
+function setBadge(counts) { const n = (counts?.review || 0); const b = $("#badge"); b.hidden = !n; b.textContent = n; }
+function lightbox(src) { const d = document.createElement("div"); d.className = "lightbox"; d.innerHTML = `<img src="${esc(src)}">`; d.onclick = () => d.remove(); document.body.appendChild(d); }
+
+async function loadStatus() {
+  try { S.status = await api("/api/status"); setBadge(S.status.counts); } catch (e) { S.status = { discogs_ok: false, discogs_error: e.message, providers: [] }; }
+  return S.status;
+}
+
+/* ---------------- router ---------------- */
+async function route() {
+  stopPoll();
+  const h = location.hash.slice(1) || "new";
+  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", h.startsWith(a.dataset.nav)));
+  if (h === "new") return viewNew();
+  if (h === "queue") return viewQueue();
+  const m = h.match(/^item\/(\d+)/); if (m) return viewItem(+m[1]);
+  location.hash = "new";
+}
+window.addEventListener("hashchange", route);
+
+/* ---------------- new ---------------- */
+function viewNew() {
+  const st = S.status || {};
+  const provs = st.providers || [];
+  $("#view").innerHTML = `
+    ${st.discogs_ok === false ? `<div class="card warn" style="margin-bottom:12px">Can't reach Discogs: ${esc(st.discogs_error)}</div>` : ""}
+    <h2>New record</h2>
+    <div class="slots">
+      ${slot("cover", "Cover", "front")}
+      ${slot("label", "Label", "side A, straight from above")}
+      ${slot("runout", "Runout", "matrix in the run-out groove")}
+    </div>
+    <label class="f">Extra photos (back cover, label side B, …)</label>
+    <input type="file" id="extra" accept="image/*" multiple>
+    <label class="f">Hints (optional)</label>
+    <textarea id="hint" placeholder="E.g. artist/title if the cover is missing, or 'Dutch pressing, orange Philips label'"></textarea>
+    <div class="row" style="margin-top:8px">
+      <label class="small muted">Read with</label>
+      <select id="provider" style="width:auto">
+        <option value="">default (${esc(st.default_provider || "?")})</option>
+        ${provs.map(p => `<option value="${p}">${p}</option>`).join("")}
+      </select>
+    </div>
+    <p class="small muted">Tip: the label and runout pin down the pressing. Shoot the runout at an angle with a light on it so the etching is readable.</p>
+    <div class="bar"><div class="inner row">
+      <button class="grow" id="queueBtn">Queue &amp; next</button>
+      <button class="primary grow" id="liveBtn">Identify now</button>
+    </div></div>`;
+  document.querySelectorAll(".slot").forEach(el => {
+    const inp = $("input", el);
+    el.addEventListener("click", e => { if (!e.target.classList.contains("x")) inp.click(); });
+    inp.addEventListener("change", () => {
+      const f = inp.files[0]; if (!f) return;
+      let img = $("img", el); if (!img) { img = document.createElement("img"); el.prepend(img); }
+      img.src = URL.createObjectURL(f); el.classList.add("has");
+    });
+    $(".x", el).addEventListener("click", e => { e.stopPropagation(); inp.value = ""; $("img", el)?.remove(); el.classList.remove("has"); });
+  });
+  $("#provider").value = store.get("provider", "");
+  $("#liveBtn").onclick = () => submit(true);
+  $("#queueBtn").onclick = () => submit(false);
+}
+function slot(name, label, sub) {
+  return `<div class="slot" data-slot="${name}"><input type="file" accept="image/*" capture="environment" name="${name}">
+    <span class="lbl">${label}</span><span class="sub">${sub}</span><button class="x" type="button">✕</button></div>`;
+}
+async function submit(live) {
+  const fd = new FormData(); let n = 0;
+  document.querySelectorAll(".slot input").forEach(i => { if (i.files[0]) { fd.append(i.name, i.files[0]); n++; } });
+  for (const f of $("#extra").files) { fd.append("extra", f); n++; }
+  if (!n) return toast("Take at least one photo");
+  fd.append("hint", $("#hint").value); fd.append("provider", $("#provider").value);
+  store.set("provider", $("#provider").value);
+  document.querySelectorAll(".bar button").forEach(b => b.disabled = true);
+  try {
+    const item = await api("/api/items", { method: "POST", body: fd });
+    if (live) location.hash = `item/${item.id}`;
+    else { toast(`#${item.id} queued`); viewNew(); loadStatus(); }
+  } catch (e) { toast("Upload failed: " + e.message); document.querySelectorAll(".bar button").forEach(b => b.disabled = false); }
+}
+
+/* ---------------- queue ---------------- */
+const FILTERS = [["review", "Review", "review"], ["busy", "Processing", "pending,processing"], ["error", "Errors", "error"],
+                 ["added", "Added", "added"], ["not_found", "Not in Discogs", "not_found"], ["skipped", "Skipped", "skipped"], ["all", "All", ""]];
+async function viewQueue() {
+  const f = FILTERS.find(x => x[0] === S.queueFilter) || FILTERS[0];
+  const data = await api(`/api/items?status=${f[2]}`);
+  const c = data.counts; setBadge(c);
+  const cnt = k => k === "busy" ? c.pending + c.processing : k === "all" ? Object.values(c).reduce((a, b) => a + b, 0) : c[k];
+  $("#view").innerHTML = `
+    <div class="chips">${FILTERS.map(([k, l]) => `<button class="chip ${k === f[0] ? "on" : ""}" data-f="${k}">${l} ${cnt(k) || 0}</button>`).join("")}</div>
+    <div class="list">${data.items.length ? data.items.map(li).join("") : `<div class="empty">Nothing here.</div>`}</div>
+    <h3>Batch</h3>
+    <div class="card small">
+      Put one subfolder of photos per record in <code>data/inbox/</code> (optionally with a <code>hint.txt</code>; file names
+      containing <i>cover</i>, <i>label</i> or <i>runout</i> are recognised) and import them here.
+      <div class="row" style="margin-top:8px"><button id="imp">Import inbox</button>
+      <a class="btn ghost" href="/api/export/not_found.csv">Export "not in Discogs" (CSV)</a></div>
+    </div>`;
+  document.querySelectorAll(".chip").forEach(b => b.onclick = () => { S.queueFilter = b.dataset.f; store.set("queueFilter", S.queueFilter); viewQueue(); });
+  $("#imp").onclick = async () => { const r = await api("/api/inbox/import", { method: "POST" }); toast(`${r.created.length} records imported`); viewQueue(); };
+  if (c.pending + c.processing > 0) S.poll = setTimeout(() => location.hash === "#queue" && viewQueue(), 4000);
+}
+function li(it) {
+  const e = it.extracted || {}; const top = (it.candidates || [])[0];
+  const name = e.artist || e.title ? `${esc(e.artist || "?")} – ${esc(e.title || "?")}` : `Record #${it.id}`;
+  const sub = [e.label, e.catno, e.country].filter(Boolean).map(esc).join(" · ");
+  const ph = it.photos[0] ? `<img src="/photos/${esc(it.photos[0].path)}" loading="lazy">` : `<div class="ph"></div>`;
+  return `<a class="li" href="#item/${it.id}">${ph}<div class="grow"><div class="t">${name}</div>
+    <div class="small muted">${sub || "&nbsp;"}${top && it.status === "review" ? ` · best match ${top.score}` : ""}</div></div>
+    <span class="st ${it.status}">${STATUS_LABEL[it.status]}</span></a>`;
+}
+
+/* ---------------- item ---------------- */
+async function viewItem(id) {
+  let it; try { it = await api(`/api/items/${id}`); } catch { $("#view").innerHTML = `<div class="empty">Item not found.</div>`; return; }
+  if (!S.status) await loadStatus();
+  const busy = it.status === "pending" || it.status === "processing";
+  const photos = `<div class="photos">${it.photos.map(p => `<img src="/photos/${esc(p.path)}" data-full="/photos/${esc(p.path)}" title="${esc(p.role)}">`).join("")}</div>`;
+  let html = `<div class="row" style="margin-bottom:8px"><h2 class="grow" style="margin:0">Record #${it.id}</h2><span class="st ${it.status}">${STATUS_LABEL[it.status]}</span></div>${photos}`;
+  if (it.hint) html += `<p class="small muted">Hint: ${esc(it.hint)}</p>`;
+
+  if (busy) {
+    html += `<div class="card row" style="margin-top:14px"><div class="spin"></div><div>Reading photos and searching Discogs…<div class="small muted">You can photograph the next record in the meantime.</div></div></div>
+      <div class="bar"><div class="inner row"><a class="btn grow" href="#new" style="text-align:center">Next record</a></div></div>`;
+    $("#view").innerHTML = html; bindPhotos();
+    S.poll = setTimeout(() => location.hash === `#item/${id}` && viewItem(id), 2000);
+    return;
+  }
+  if (it.error) html += `<div class="card warn" style="margin-top:12px">${esc(it.error)}</div>`;
+
+  html += extractedForm(it);
+  if (it.status === "added") {
+    html += `<div class="card" style="margin-top:12px">✅ Added: <a href="https://www.discogs.com/release/${it.release_id}" target="_blank" rel="noopener">release ${it.release_id}</a>
+      <div class="small muted">${esc([it.media_condition, it.sleeve_condition].filter(Boolean).join(" / "))}</div></div>`;
+  }
+  html += `<h3>Candidates</h3>
+    <div class="row" style="margin-bottom:8px"><input id="q" class="grow" placeholder="Search yourself, or paste a Discogs URL / release ID"><button id="qBtn">Search</button></div>
+    <div class="list" id="cands"></div>`;
+  html += `<h3>Other</h3><div class="row">
+      <button class="ghost" data-st="not_found">Not in Discogs</button>
+      <button class="ghost" data-st="skipped">Skip</button>
+      <button class="ghost danger" id="del">Delete</button></div>`;
+  if (it.status !== "added") html += addBar();
+  $("#view").innerHTML = html; bindPhotos();
+
+  let cands = it.candidates || [];
+  let sel = cands[0]?.id ?? null;
+  const renderCands = () => {
+    $("#cands").innerHTML = cands.length ? cands.map(c => candHtml(c, c.id === sel)).join("")
+      : `<div class="empty">No candidates. Edit the details above or search yourself.</div>`;
+    document.querySelectorAll(".cand").forEach(el => el.onclick = e => { if (e.target.tagName === "A") return; sel = +el.dataset.id; renderCands(); updateAdd(); });
+  };
+  const updateAdd = () => { const b = $("#addBtn"); if (b) { b.disabled = !sel; b.textContent = sel ? `Add to collection (r${sel})` : "Pick a candidate"; } };
+  renderCands(); updateAdd();
+
+  $("#qBtn").onclick = async () => {
+    const q = $("#q").value.trim(); if (!q) return;
+    $("#qBtn").disabled = true;
+    try { const r = await api(`/api/items/${id}/search`, { json: { q } });
+      const ids = new Set(r.candidates.map(c => c.id)); cands = [...r.candidates, ...cands.filter(c => !ids.has(c.id))];
+      if (r.candidates[0]) sel = r.candidates[0].id; renderCands(); updateAdd();
+    } catch (e) { toast(e.message); } finally { $("#qBtn").disabled = false; }
+  };
+  $("#q").onkeydown = e => { if (e.key === "Enter") $("#qBtn").click(); };
+  $("#researchBtn").onclick = async () => {
+    const ex = {}; document.querySelectorAll("[data-ex]").forEach(i => ex[i.dataset.ex] = i.value.trim() || null);
+    $("#researchBtn").disabled = true; toast("Searching…");
+    try { await api(`/api/items/${id}/reprocess`, { json: { extracted: ex } }); viewItem(id); } catch (e) { toast(e.message); $("#researchBtn").disabled = false; }
+  };
+  $("#rereadBtn").onclick = async () => {
+    await api(`/api/items/${id}/reprocess`, { json: { provider: $("#reProv").value || null, hint: $("#reHint").value } }); viewItem(id);
+  };
+  document.querySelectorAll("[data-st]").forEach(b => b.onclick = async () => { await api(`/api/items/${id}/status`, { json: { status: b.dataset.st } }); toast(STATUS_LABEL[b.dataset.st]); next(id); });
+  $("#del").onclick = async () => { if ($("#del").dataset.sure) { await api(`/api/items/${id}`, { method: "DELETE" }); toast("Deleted"); location.hash = "queue"; }
+    else { $("#del").dataset.sure = 1; $("#del").textContent = "Sure? Tap again"; } };
+  if ($("#addBtn")) $("#addBtn").onclick = () => doAdd(id, sel, false);
+}
+function bindPhotos() { document.querySelectorAll(".photos img").forEach(i => i.onclick = () => lightbox(i.dataset.full)); }
+
+function extractedForm(it) {
+  const e = it.extracted || {};
+  const fld = (k, l) => `<div><label class="f">${l}</label><input data-ex="${k}" value="${esc(e[k] ?? "")}"></div>`;
+  const provs = (S.status?.providers || []);
+  return `<h3>Extracted ${e.confidence ? `<span class="muted">(${esc(it.provider || "")}, confidence ${esc(e.confidence)})</span>` : ""}</h3>
+    <details ${it.status === "review" && (it.candidates || []).length ? "" : "open"} class="card">
+      <summary>${esc([e.artist, e.title].filter(Boolean).join(" – ") || "no data")} ${e.catno ? "· " + esc(e.catno) : ""}</summary>
+      <div class="grid2">${fld("artist", "Artist")}${fld("title", "Title")}${fld("label", "Label")}${fld("catno", "Catalog number")}${fld("country", "Country")}${fld("year", "Year")}</div>
+      ${fld("matrix_a", "Runout side A")}${fld("matrix_b", "Runout side B")}
+      ${e.other_identifiers ? `<p class="small muted">Other: ${esc(e.other_identifiers)}</p>` : ""}
+      ${e.notes ? `<p class="small muted">Model notes: ${esc(e.notes)}</p>` : ""}
+      <div class="row" style="margin-top:10px"><button id="researchBtn">Search again with these details</button></div>
+      <label class="f">Or re-read the photos</label>
+      <div class="row"><select id="reProv" style="width:auto"><option value="">default</option>${provs.map(p => `<option>${p}</option>`).join("")}</select>
+        <input id="reHint" class="grow" placeholder="extra hint" value="${esc(it.hint || "")}" style="width:auto"><button id="rereadBtn">Re-read</button></div>
+    </details>`;
+}
+function candHtml(c, sel) {
+  const img = c.thumb ? `<img src="${esc(c.thumb)}" loading="lazy" referrerpolicy="no-referrer">` : `<div class="ph"></div>`;
+  const why = (c.reasons || []).map(r => `<span class="${r.startsWith("matrix") ? "m" : ""}">${esc(r)}</span>`).join("");
+  const mx = (c.matrix || []).length ? `<div class="mx">${c.matrix.map(esc).join("<br>")}</div>` : "";
+  return `<div class="cand ${sel ? "sel" : ""}" data-id="${c.id}">${img}<div class="grow" style="min-width:0">
+    <div class="row" style="flex-wrap:nowrap"><div class="t grow">${esc(c.artist)} – ${esc(c.title)}</div><div class="score">${c.score}</div></div>
+    <div class="small">${esc((c.labels || []).join(", "))} · <b>${esc(c.catno || "")}</b></div>
+    <div class="small muted">${esc([c.country, c.year, c.formats].filter(Boolean).join(" · "))} · <a href="${esc(c.url)}" target="_blank" rel="noopener">Discogs ↗</a></div>
+    <div class="why">${why}</div>${sel ? mx : ""}</div></div>`;
+}
+function addBar() {
+  const st = S.status || {}; const f = st.fields || {};
+  const media = f["Media Condition"] || DEFAULT_MEDIA, sleeve = f["Sleeve Condition"] || DEFAULT_SLEEVE;
+  const folders = st.folders || [];
+  const opt = (arr, cur) => `<option value="">–</option>` + arr.map(o => `<option ${o === cur ? "selected" : ""}>${esc(o)}</option>`).join("");
+  const fid = store.get("folder", st.default_folder_id);
+  return `<div class="bar"><div class="inner">
+    <div class="grid2">
+      <div><label class="f">Media</label><select id="media">${opt(media, store.get("media", "Very Good Plus (VG+)"))}</select></div>
+      <div><label class="f">Sleeve</label><select id="sleeve">${opt(sleeve, store.get("sleeve", "Very Good Plus (VG+)"))}</select></div>
+      <div><label class="f">Folder</label><select id="folder">${folders.map(x => `<option value="${x.id}" ${x.id == fid ? "selected" : ""}>${esc(x.name)}</option>`).join("") || `<option value="1">Uncategorized</option>`}</select></div>
+      <div><label class="f">Notes</label><input id="notes" placeholder="optional"></div>
+    </div>
+    <div class="row" style="margin-top:10px"><button class="primary grow" id="addBtn">Add to collection</button></div>
+  </div></div>`;
+}
+async function doAdd(id, releaseId, force) {
+  if (!releaseId) return;
+  const body = { release_id: releaseId, folder_id: +$("#folder").value || null, media_condition: $("#media").value || null,
+    sleeve_condition: $("#sleeve").value || null, notes: $("#notes").value.trim() || null, force };
+  store.set("media", body.media_condition); store.set("sleeve", body.sleeve_condition); store.set("folder", body.folder_id);
+  const b = $("#addBtn"); b.disabled = true; b.textContent = "Adding…";
+  try {
+    const r = await api(`/api/items/${id}/add`, { json: body });
+    toast(r.warnings?.length ? "Added, but: " + r.warnings.join("; ") : "Added to your collection ✓", 3000);
+    loadStatus(); next(id);
+  } catch (e) {
+    if (e.status === 409) { b.disabled = false; b.textContent = `${e.message} Add anyway?`; b.onclick = () => doAdd(id, releaseId, true); }
+    else { toast(e.message, 4000); b.disabled = false; b.textContent = "Try again"; }
+  }
+}
+async function next(currentId) {
+  const r = await api("/api/items?status=review"); setBadge(r.counts);
+  const nxt = r.items.filter(i => i.id !== currentId).sort((a, b) => a.id - b.id)[0];
+  location.hash = nxt ? `item/${nxt.id}` : "new";
+}
+
+loadStatus().then(route);
+</script>
+</body>
+</html>

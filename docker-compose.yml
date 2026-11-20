@@ -1,0 +1,11 @@
+services:
+  vinyl2discogs:
+    image: ghcr.io/rutgersmit/vinyl2discogs:latest
+    # build: .   # uncomment to build locally instead of pulling the image
+    container_name: vinyl2discogs
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8765:8000"
+    volumes:
+      - ./data:/data

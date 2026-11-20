@@ -1,0 +1,338 @@
+"""vinyl2discogs — photos of an LP -> identification -> Discogs collection."""
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+import secrets
+import shutil
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Callable
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from . import discogs as dg
+from . import vision
+from .config import Settings, get_settings
+from .db import DB
+
+log = logging.getLogger("vinyl2discogs")
+STATIC = Path(__file__).parent / "static"
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+ROLE_WORDS = {"cover": "cover", "front": "cover", "label": "label", "runout": "runout",
+              "matrix": "runout", "back": "back", "rear": "back"}
+
+
+# ---- request models -----------------------------------------------------------
+class ReprocessIn(BaseModel):
+    provider: str | None = None
+    hint: str | None = None
+    extracted: dict[str, Any] | None = None  # edited fields -> search again without re-reading photos
+
+
+class SearchIn(BaseModel):
+    q: str
+
+
+class AddIn(BaseModel):
+    release_id: int
+    folder_id: int | None = None
+    media_condition: str | None = None
+    sleeve_condition: str | None = None
+    notes: str | None = None
+    force: bool = False
+
+
+class StatusIn(BaseModel):
+    status: str
+
+
+# ---- app factory --------------------------------------------------------------
+def create_app(
+    settings: Settings | None = None,
+    discogs_factory: Callable[[Settings], dg.DiscogsClient] | None = None,
+    vision_factory: Callable[[str, Settings], vision.VisionProvider] | None = None,
+    run_worker: bool = True,
+) -> FastAPI:
+    settings = settings or get_settings()
+    settings.photos_dir.mkdir(parents=True, exist_ok=True)
+    settings.inbox_dir.mkdir(parents=True, exist_ok=True)
+    db = DB(settings.db_path)
+    discogs_factory = discogs_factory or dg.DiscogsClient
+    vision_factory = vision_factory or vision.get_provider
+    state: dict[str, Any] = {"discogs": None, "wake": asyncio.Event()}
+
+    def client() -> dg.DiscogsClient:
+        if state["discogs"] is None:
+            try:
+                state["discogs"] = discogs_factory(settings)
+            except dg.DiscogsError as e:
+                raise HTTPException(503, str(e))
+        return state["discogs"]
+
+    # ---- worker ---------------------------------------------------------------
+    async def process(item: dict) -> None:
+        photos = [settings.photos_dir / p["path"] for p in item["photos"]]
+        roles = [p.get("role", "") for p in item["photos"]]
+        provider = vision_factory(item.get("provider") or settings.vision_provider, settings)
+        extracted = await provider.extract(photos, roles, item.get("hint", ""))
+        db.update(item["id"], extracted=extracted, provider=provider.name)
+        cands = await dg.find_candidates(client(), extracted, detail_lookups=settings.detail_lookups)
+        db.update(item["id"], candidates=cands, status="review")
+
+    async def worker_loop() -> None:
+        while True:
+            item = db.claim_next()
+            if not item:
+                state["wake"].clear()
+                try:
+                    await asyncio.wait_for(state["wake"].wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            try:
+                await process(item)
+            except HTTPException as e:
+                db.update(item["id"], status="error", error=str(e.detail))
+            except Exception as e:  # noqa: BLE001
+                log.exception("Processing item %s failed", item["id"])
+                db.update(item["id"], status="error", error=f"{type(e).__name__}: {e}")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        tasks = [asyncio.create_task(worker_loop()) for _ in range(max(1, settings.worker_concurrency))] if run_worker else []
+        yield
+        for t in tasks:
+            t.cancel()
+        if state["discogs"] is not None:
+            await state["discogs"].aclose()
+
+    app = FastAPI(title="vinyl2discogs", lifespan=lifespan)
+    app.state.db = db
+    app.state.process = process
+
+    # ---- optional basic auth -------------------------------------------------
+    if settings.app_password:
+        @app.middleware("http")
+        async def basic_auth(request: Request, call_next):
+            hdr = request.headers.get("authorization", "")
+            ok = False
+            if hdr.lower().startswith("basic "):
+                try:
+                    _, pw = base64.b64decode(hdr[6:]).decode().split(":", 1)
+                    ok = secrets.compare_digest(pw, settings.app_password)
+                except Exception:  # noqa: BLE001
+                    ok = False
+            if not ok:
+                return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="vinyl2discogs"'})
+            return await call_next(request)
+
+    # ---- helpers --------------------------------------------------------------
+    def save_upload(dest_dir: Path, up: UploadFile, role: str, idx: int) -> dict:
+        ext = Path(up.filename or "").suffix.lower()
+        ext = ext if ext in IMAGE_EXT else ".jpg"
+        name = f"{idx:02d}_{role or 'foto'}{ext}"
+        with open(dest_dir / name, "wb") as f:
+            shutil.copyfileobj(up.file, f)
+        return {"path": f"{dest_dir.name}/{name}", "role": role}
+
+    def wake() -> None:
+        state["wake"].set()
+
+    def get_item(item_id: int) -> dict:
+        item = db.get(item_id)
+        if not item:
+            raise HTTPException(404, "Item not found")
+        return item
+
+    # ---- routes ---------------------------------------------------------------
+    @app.get("/")
+    async def index():
+        return FileResponse(STATIC / "index.html")
+
+    @app.get("/api/status")
+    async def status():
+        out: dict[str, Any] = {
+            "providers": vision.available_providers(settings),
+            "default_provider": settings.vision_provider,
+            "default_folder_id": settings.discogs_default_folder_id,
+            "counts": db.counts(),
+            "discogs_ok": False,
+        }
+        try:
+            c = client()
+            out["username"] = await c.username()
+            out["folders"] = await c.folders()
+            fields = await c.fields()
+            out["fields"] = {f["name"]: f.get("options", []) for f in fields if f.get("type") == "dropdown"}
+            out["discogs_ok"] = True
+        except HTTPException as e:
+            out["discogs_error"] = e.detail
+        except dg.DiscogsError as e:
+            out["discogs_error"] = str(e)
+        return out
+
+    @app.post("/api/items")
+    async def create_item(
+        cover: UploadFile | None = File(None),
+        label: UploadFile | None = File(None),
+        runout: UploadFile | None = File(None),
+        extra: list[UploadFile] | None = File(None),
+        hint: str = Form(""),
+        provider: str = Form(""),
+    ):
+        uploads = [(u, r) for u, r in ((cover, "cover"), (label, "label"), (runout, "runout")) if u and u.filename]
+        uploads += [(u, "") for u in (extra or []) if u and u.filename]
+        if not uploads:
+            raise HTTPException(400, "At least one photo is required")
+        d = settings.photos_dir / uuid.uuid4().hex[:12]
+        d.mkdir(parents=True)
+        photos = [save_upload(d, u, r, i) for i, (u, r) in enumerate(uploads)]
+        item = db.create(photos=photos, hint=hint.strip(), provider=provider or None)
+        wake()
+        return item
+
+    @app.post("/api/inbox/import")
+    async def import_inbox():
+        """Each subfolder of /data/inbox is one record. Optional hint.txt with hints."""
+        created = []
+        for sub in sorted(p for p in settings.inbox_dir.iterdir() if p.is_dir()):
+            imgs = sorted(p for p in sub.iterdir() if p.suffix.lower() in IMAGE_EXT)
+            if not imgs:
+                continue
+            hint_file = sub / "hint.txt"
+            hint = hint_file.read_text(encoding="utf-8").strip() if hint_file.exists() else ""
+            hint = f"(folder: {sub.name})\n{hint}".strip()
+            d = settings.photos_dir / uuid.uuid4().hex[:12]
+            d.mkdir(parents=True)
+            photos = []
+            for i, img in enumerate(imgs):
+                role = next((v for k, v in ROLE_WORDS.items() if k in img.stem.lower()), "")
+                name = f"{i:02d}_{role or 'foto'}{img.suffix.lower()}"
+                shutil.move(str(img), d / name)
+                photos.append({"path": f"{d.name}/{name}", "role": role})
+            shutil.rmtree(sub, ignore_errors=True)
+            created.append(db.create(photos=photos, hint=hint, source="inbox")["id"])
+        wake()
+        return {"created": created}
+
+    @app.get("/api/items")
+    async def list_items(status: str = ""):
+        statuses = [s for s in status.split(",") if s] or None
+        return {"items": db.list(statuses), "counts": db.counts()}
+
+    @app.get("/api/items/{item_id}")
+    async def item_detail(item_id: int):
+        return get_item(item_id)
+
+    @app.delete("/api/items/{item_id}")
+    async def delete_item(item_id: int):
+        item = get_item(item_id)
+        dirs = {p["path"].split("/")[0] for p in item["photos"]}
+        for d in dirs:
+            shutil.rmtree(settings.photos_dir / d, ignore_errors=True)
+        db.delete(item_id)
+        return {"ok": True}
+
+    @app.post("/api/items/{item_id}/reprocess")
+    async def reprocess(item_id: int, body: ReprocessIn):
+        item = get_item(item_id)
+        if body.extracted is not None:
+            ex = vision.normalize_extracted({**(item.get("extracted") or {}), **body.extracted})
+            ex["confidence"] = "high"  # corrected by the user
+            cands = await dg.find_candidates(client(), ex, detail_lookups=settings.detail_lookups)
+            return db.update(item_id, extracted=ex, candidates=cands, status="review", error=None)
+        fields: dict[str, Any] = {"status": "pending", "error": None}
+        if body.provider:
+            fields["provider"] = body.provider
+        if body.hint is not None:
+            fields["hint"] = body.hint
+        item = db.update(item_id, **fields)
+        wake()
+        return item
+
+    @app.post("/api/items/{item_id}/search")
+    async def manual_search(item_id: int, body: SearchIn):
+        item = get_item(item_id)
+        c = client()
+        ref = dg.parse_release_ref(body.q)
+        if ref:
+            cands = [await dg.candidate_from_release_id(c, ref)]
+        else:
+            ex = item.get("extracted") or {}
+            results = await c.search(q=body.q, format="Vinyl")
+            cands = [dg.to_candidate(r, *dg.score_search_result(r, ex)) for r in results]
+            cands.sort(key=lambda x: x["score"], reverse=True)
+        return {"candidates": cands}
+
+    @app.get("/api/releases/{release_id}/owned")
+    async def owned(release_id: int):
+        return {"instances": len(await client().instances_of(release_id))}
+
+    @app.post("/api/items/{item_id}/add")
+    async def add(item_id: int, body: AddIn):
+        get_item(item_id)
+        c = client()
+        folder = body.folder_id or settings.discogs_default_folder_id
+        if not body.force:
+            existing = await c.instances_of(body.release_id)
+            if existing:
+                return JSONResponse(
+                    {"detail": f"This release is already in your collection ({len(existing)}x).", "duplicate": len(existing)},
+                    status_code=409,
+                )
+        instance_id = await c.add_to_collection(body.release_id, folder)
+        field_ids = {f["name"].lower(): f["id"] for f in await c.fields()}
+        warnings = []
+        for name, value in (("media condition", body.media_condition),
+                            ("sleeve condition", body.sleeve_condition),
+                            ("notes", body.notes)):
+            if value and name in field_ids:
+                try:
+                    await c.set_field(folder, body.release_id, instance_id, field_ids[name], value)
+                except dg.DiscogsError as e:
+                    warnings.append(f"{name}: {e}")
+        item = db.update(
+            item_id, status="added", release_id=body.release_id, instance_id=instance_id, folder_id=folder,
+            media_condition=body.media_condition, sleeve_condition=body.sleeve_condition, notes=body.notes,
+            error="; ".join(warnings) or None,
+        )
+        return {"item": item, "warnings": warnings}
+
+    @app.post("/api/items/{item_id}/status")
+    async def set_status(item_id: int, body: StatusIn):
+        if body.status not in ("skipped", "not_found", "review", "pending"):
+            raise HTTPException(400, "Invalid status")
+        get_item(item_id)
+        item = db.update(item_id, status=body.status)
+        if body.status == "pending":
+            wake()
+        return item
+
+    @app.get("/api/export/not_found.csv")
+    async def export_not_found():
+        """Records that need to be submitted to Discogs by hand."""
+        import csv, io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["id", "artist", "title", "label", "catno", "country", "year", "matrix_a", "matrix_b", "notes", "hint"])
+        for it in db.list(["not_found"]):
+            e = it.get("extracted") or {}
+            w.writerow([it["id"], *(e.get(k) or "" for k in
+                       ("artist", "title", "label", "catno", "country", "year", "matrix_a", "matrix_b", "notes")),
+                        it.get("hint", "")])
+        return Response(buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=vinyl2discogs_not_found.csv"})
+
+    app.mount("/photos", StaticFiles(directory=settings.photos_dir), name="photos")
+    app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    return app
+
+
+logging.basicConfig(level=logging.INFO)
+# Run with: uvicorn --factory app.main:create_app
