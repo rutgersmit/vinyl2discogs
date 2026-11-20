@@ -252,3 +252,19 @@ def test_provider_autodetect(tmp_path):
     assert Settings(data_dir=tmp_path, anthropic_api_key="k", ollama_url="").vision_provider == "claude"
     assert Settings(data_dir=tmp_path, anthropic_api_key="", ollama_url="http://x:11434").vision_provider == "ollama"
     assert Settings(data_dir=tmp_path, anthropic_api_key="k", ollama_url="http://x", vision_provider_env="ollama").vision_provider == "ollama"
+
+
+def test_unwritable_data_dir_exits_with_hint(tmp_path, monkeypatch, caplog):
+    import errno as errno_mod
+    from pathlib import Path
+    from app.main import ensure_data_dir
+
+    def deny(self, *a, **kw):
+        raise PermissionError(errno_mod.EACCES, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "mkdir", deny)
+    with pytest.raises(SystemExit) as exc:
+        ensure_data_dir(Settings(data_dir=tmp_path / "data"))
+    assert exc.value.code == 1
+    msg = caplog.text
+    assert "Cannot write to the data folder" in msg and "docker compose pull" in msg and "PUID/PGID" in msg

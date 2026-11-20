@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import logging
+import os
 import secrets
 import shutil
 import uuid
@@ -52,6 +54,41 @@ class StatusIn(BaseModel):
     status: str
 
 
+# ---- startup checks -------------------------------------------------------------
+def data_dir_error(settings: Settings, err: OSError) -> str:
+    d = settings.data_dir
+    existing = next((p for p in (d, *d.parents) if p.exists()), None)
+    if existing is None:
+        owner = "unknown"
+    else:
+        st = existing.stat()
+        owner = f"{st.st_uid}:{st.st_gid}" + ("" if existing == d else f" (nearest existing folder: {existing})")
+    return (
+        f"Cannot write to the data folder {d} ({err.strerror}). "
+        f"The app runs as {os.getuid()}:{os.getgid()}, the folder is owned by {owner}.\n"
+        "  Docker fixes:\n"
+        "  - make sure you run the latest image: docker compose pull && docker compose up -d --force-recreate\n"
+        "  - don't set `user:` in docker-compose.yml; use PUID/PGID instead (the entrypoint needs to start as root)\n"
+        "  - SELinux host (Fedora/RHEL): mount the volume as ./data:/data:z\n"
+        "  - NFS share with root_squash: on the host, run chown -R 1000:1000 data (or your PUID:PGID)"
+    )
+
+
+def ensure_data_dir(settings: Settings) -> None:
+    """Create the data folders and verify they are writable; exit with a clear message if not."""
+    try:
+        for d in (settings.photos_dir, settings.inbox_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        probe = settings.data_dir / ".write-test"
+        probe.touch()
+        probe.unlink()
+    except OSError as e:
+        if e.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        log.error(data_dir_error(settings, e))
+        raise SystemExit(1) from None
+
+
 # ---- app factory --------------------------------------------------------------
 def create_app(
     settings: Settings | None = None,
@@ -60,8 +97,7 @@ def create_app(
     run_worker: bool = True,
 ) -> FastAPI:
     settings = settings or get_settings()
-    settings.photos_dir.mkdir(parents=True, exist_ok=True)
-    settings.inbox_dir.mkdir(parents=True, exist_ok=True)
+    ensure_data_dir(settings)
     db = DB(settings.db_path)
     discogs_factory = discogs_factory or dg.DiscogsClient
     vision_factory = vision_factory or vision.get_provider
