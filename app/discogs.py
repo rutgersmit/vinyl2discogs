@@ -46,6 +46,10 @@ class DiscogsClient:
         self._release_cache: dict[int, dict] = {}
         self._fields_cache: list[dict] | None = None
 
+    @property
+    def settings(self) -> Settings:
+        return self._s
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -117,7 +121,8 @@ class DiscogsClient:
 
     async def release(self, release_id: int) -> dict:
         if release_id not in self._release_cache:
-            self._release_cache[release_id] = await self._req("GET", f"/releases/{release_id}")
+            params = {"curr_abbr": self._s.currency} if self._s.currency else None
+            self._release_cache[release_id] = await self._req("GET", f"/releases/{release_id}", params=params)
         return self._release_cache[release_id]
 
 
@@ -210,7 +215,33 @@ def release_matrices(rel: dict) -> list[str]:
     ]
 
 
-def to_candidate(r: dict, score: float, why: list[str], rel: dict | None = None) -> dict:
+def rarity(rel: dict | None, settings: Settings) -> dict | None:
+    """Rarity signals from a full release (no extra API calls: the data is in /releases/{id}).
+
+    Returns None when the release has no community data. `rare` is true when at least one
+    signal crosses its threshold; each threshold can be disabled by setting it to 0.
+    """
+    if not rel or not isinstance(rel.get("community"), dict):
+        return None
+    have = int(rel["community"].get("have") or 0)
+    want = int(rel["community"].get("want") or 0)
+    price = rel.get("lowest_price")
+    for_sale = rel.get("num_for_sale")
+    reasons: list[str] = []
+    if settings.rare_max_have and have <= settings.rare_max_have:
+        reasons.append(f"only {have} on Discogs")
+    ratio = want / max(have, 1)
+    if settings.rare_min_want_ratio and want >= settings.rare_min_want_count and ratio >= settings.rare_min_want_ratio:
+        reasons.append(f"sought after ({want} want, {have} have)")
+    if settings.rare_min_price and isinstance(price, (int, float)) and price >= settings.rare_min_price:
+        cur = settings.currency or "USD"
+        reasons.append(f"from {price:.0f} {cur}" + (f", {for_sale} for sale" if for_sale is not None else ""))
+    return {"rare": bool(reasons), "reasons": reasons, "have": have, "want": want,
+            "lowest_price": price, "num_for_sale": for_sale}
+
+
+def to_candidate(r: dict, score: float, why: list[str], rel: dict | None = None,
+                 settings: Settings | None = None) -> dict:
     artist, title = split_title(r.get("title", ""))
     cand = {
         "id": r["id"],
@@ -226,8 +257,11 @@ def to_candidate(r: dict, score: float, why: list[str], rel: dict | None = None)
         "score": round(score, 1),
         "reasons": why,
         "matrix": [],
+        "rarity": None,
     }
     if rel:
+        if settings is not None:
+            cand["rarity"] = rarity(rel, settings)
         cand["matrix"] = release_matrices(rel)[:6]
         if rel.get("released"):
             cand["year"] = rel.get("released")
@@ -282,7 +316,7 @@ async def find_candidates(client: DiscogsClient, ex: dict, *, detail_lookups: in
             if mo > 0:
                 score += 40 * mo
                 why = [*why, f"matrix {int(mo * 100)}%"]
-        out.append(to_candidate(r, score, why, rel))
+        out.append(to_candidate(r, score, why, rel, client.settings))
 
     out.sort(key=lambda c: c["score"], reverse=True)
     return out[:limit]
@@ -301,7 +335,7 @@ async def candidate_from_release_id(client: DiscogsClient, release_id: int) -> d
                   + [d for f in rel.get("formats", []) for d in f.get("descriptions", [])],
         "thumb": rel.get("thumb"),
     }
-    return to_candidate(fake_search, 0, ["manual"], rel)
+    return to_candidate(fake_search, 0, ["manual"], rel, client.settings)
 
 
 def parse_release_ref(ref: str) -> int | None:

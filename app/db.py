@@ -18,7 +18,7 @@ from typing import Any
 #   error       -> processing failed
 STATUSES = ("pending", "processing", "review", "added", "not_found", "skipped", "error")
 
-JSON_COLS = ("photos", "extracted", "candidates", "error_info")
+JSON_COLS = ("photos", "extracted", "candidates", "error_info", "rare")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS items (
     sleeve_condition TEXT,
     notes TEXT,
     error TEXT,
-    error_info TEXT
+    error_info TEXT,
+    rare TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_items_status ON items(status);
 """
@@ -58,8 +59,9 @@ class DB:
         self._conn.executescript(SCHEMA)
         # Lightweight migrations for databases created by older versions.
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(items)")}
-        if "error_info" not in cols:
-            self._conn.execute("ALTER TABLE items ADD COLUMN error_info TEXT")
+        for col in ("error_info", "rare"):
+            if col not in cols:
+                self._conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
         self._lock = threading.Lock()
         # After a restart: put half-processed items back in the queue.
         self._conn.execute("UPDATE items SET status='pending' WHERE status='processing'")
@@ -84,12 +86,15 @@ class DB:
     def get(self, item_id: int) -> dict | None:
         return self._row(self._conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone())
 
-    def list(self, statuses: list[str] | None = None, limit: int = 500) -> list[dict]:
+    def list(self, statuses: list[str] | None = None, limit: int = 500, rare_only: bool = False) -> list[dict]:
+        where, args = [], []
         if statuses:
-            q = f"SELECT * FROM items WHERE status IN ({','.join('?' * len(statuses))}) ORDER BY id DESC LIMIT ?"
-            rows = self._conn.execute(q, (*statuses, limit)).fetchall()
-        else:
-            rows = self._conn.execute("SELECT * FROM items ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            where.append(f"status IN ({','.join('?' * len(statuses))})")
+            args += statuses
+        if rare_only:
+            where.append("rare IS NOT NULL")
+        q = "SELECT * FROM items" + (f" WHERE {' AND '.join(where)}" if where else "") + " ORDER BY id DESC LIMIT ?"
+        rows = self._conn.execute(q, (*args, limit)).fetchall()
         return [self._row(r) for r in rows]  # type: ignore[misc]
 
     def counts(self) -> dict[str, int]:
