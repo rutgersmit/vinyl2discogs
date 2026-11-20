@@ -523,3 +523,31 @@ def test_home_screen_icons(env):
         if icon["src"].endswith(".png"):
             w, h = Image.open(io.BytesIO(r.content)).size
             assert f"{w}x{h}" == icon["sizes"]
+
+
+def test_rare_alert_reservation_is_atomic_and_migration_seeds_history(tmp_path):
+    import sqlite3
+    import threading as th
+    from app.db import DB
+    db = DB(tmp_path / "a.sqlite")
+    item = db.create(photos=[])
+    results: list[bool] = []
+    ts = [th.Thread(target=lambda: results.append(db.reserve_rare_alert(item["id"], 111))) for _ in range(8)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    assert results.count(True) == 1 and db.get(item["id"])["rare_alerted"] == [111]
+    assert db.reserve_rare_alert(item["id"], 222) is True and db.get(item["id"])["rare_alerted"] == [111, 222]
+
+    # A database from the first rare-find version: `rare` set (webhook already sent), no history column yet.
+    p = tmp_path / "v1.sqlite"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+                " status TEXT NOT NULL DEFAULT 'pending', source TEXT NOT NULL DEFAULT 'upload', hint TEXT NOT NULL DEFAULT '',"
+                " provider TEXT, photos TEXT NOT NULL DEFAULT '[]', extracted TEXT, candidates TEXT, release_id INTEGER,"
+                " instance_id INTEGER, folder_id INTEGER, media_condition TEXT, sleeve_condition TEXT, notes TEXT, error TEXT,"
+                " error_info TEXT, rare TEXT)")
+    con.execute("""INSERT INTO items (created_at, updated_at, rare) VALUES ('x','x','{"release_id": 111}'), ('x','x',NULL)""")
+    con.commit(); con.close()
+    old = DB(p)
+    assert old.get(1)["rare_alerted"] == [111] and old.get(2)["rare_alerted"] is None
+    assert old.reserve_rare_alert(1, 111) is False

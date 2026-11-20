@@ -146,14 +146,10 @@ def create_app(
         else:
             pick = candidates[0] if candidates else None
         info = rare_info(pick) if pick and (pick.get("rarity") or {}).get("rare") else None
-        alerted = list(item.get("rare_alerted") or [])
-        fields: dict[str, Any] = {"rare": info}
-        if info and info["release_id"] not in alerted:
-            fields["rare_alerted"] = [*alerted, info["release_id"]]
-            db.update(item["id"], **fields)
+        db.update(item["id"], rare=info)
+        # Check-and-record in one locked step: overlapping requests on one item alert only once.
+        if info and db.reserve_rare_alert(item["id"], info["release_id"]):
             await notify_rare(item["id"], info)
-        else:
-            db.update(item["id"], **fields)
         return info
 
     # ---- worker ---------------------------------------------------------------

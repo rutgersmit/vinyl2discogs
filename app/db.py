@@ -63,6 +63,11 @@ class DB:
         for col in ("error_info", "rare", "rare_alerted"):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
+                if col == "rare_alerted":
+                    # Databases from the first rare-find version already alerted for the current flag.
+                    self._conn.execute(
+                        "UPDATE items SET rare_alerted = json_array(json_extract(rare, '$.release_id'))"
+                        " WHERE rare IS NOT NULL AND json_extract(rare, '$.release_id') IS NOT NULL")
         self._lock = threading.Lock()
         # After a restart: put half-processed items back in the queue.
         self._conn.execute("UPDATE items SET status='pending' WHERE status='processing'")
@@ -140,6 +145,19 @@ class DB:
                 (_now(),),
             )
             return cur.rowcount
+
+    def reserve_rare_alert(self, item_id: int, release_id: int) -> bool:
+        """Record that this release was alerted for the item. True only for the first caller."""
+        with self._lock:
+            row = self._conn.execute("SELECT rare_alerted FROM items WHERE id=?", (item_id,)).fetchone()
+            if row is None:
+                return False
+            alerted = json.loads(row["rare_alerted"]) if row["rare_alerted"] else []
+            if release_id in alerted:
+                return False
+            self._conn.execute("UPDATE items SET rare_alerted=? WHERE id=?",
+                               (json.dumps([*alerted, release_id]), item_id))
+            return True
 
     def delete(self, item_id: int) -> None:
         with self._lock:

@@ -485,8 +485,7 @@ async function checkRare() {
   const show = fresh.filter(it => document.hidden || location.hash !== `#item/${it.id}`);
   if (show.length < fresh.length) buzz([80, 60, 80]);  // the one you're looking at already shows its banner
   if (!show.length) return;
-  show.slice(0, MAX_ALERTS).forEach(rareAlert);
-  if (show.length > MAX_ALERTS) rareSummary(show.length - MAX_ALERTS);
+  show.forEach(rareAlert);
   buzz([120, 80, 120, 80, 240]);
   if (notifyOn() && document.hidden) {
     const one = show.length === 1 ? show[0] : null;
@@ -497,24 +496,33 @@ async function checkRare() {
       n.onclick = () => { window.focus(); location.hash = one ? `item/${one.id}` : "queue"; n.close(); }; } catch {}
   }
 }
+// At most MAX_ALERTS record cards at a time; anything beyond goes into one "+N more" card,
+// which keeps counting across polls and manual adds until it is dismissed or times out.
 function pushAlert(a) {
-  const box = $("#alerts"), close = () => a.remove();
-  a.onclick = e => { if (e.target.tagName === "BUTTON") e.preventDefault(); close(); };
-  box.prepend(a); while (box.children.length > MAX_ALERTS + 1) box.lastElementChild.remove();
-  setTimeout(close, 20000);
+  const box = $("#alerts");
+  if (box.querySelectorAll(".alert[data-item]").length >= MAX_ALERTS) return rareOverflow(1);
+  a.onclick = e => { if (e.target.tagName === "BUTTON") e.preventDefault(); a.remove(); };
+  box.prepend(a); setTimeout(() => a.remove(), 20000);
 }
-function rareSummary(n) {
-  const a = document.createElement("a");
-  a.className = "alert"; a.href = "#queue"; a.setAttribute("role", "alert");
-  a.innerHTML = `<span class="gem">💎</span><span><b>+${n} more rare finds</b><div class="small muted">See the 💎 records in the queue</div></span><button type="button" aria-label="Dismiss">✕</button>`;
-  pushAlert(a);
+function rareOverflow(n) {
+  const box = $("#alerts");
+  let s = box.querySelector(".alert.more");
+  if (!s) {
+    s = document.createElement("a");
+    s.className = "alert more"; s.href = "#queue"; s.setAttribute("role", "alert"); s.dataset.n = 0;
+    s.onclick = e => { if (e.target.tagName === "BUTTON") e.preventDefault(); s.remove(); };
+    box.append(s);
+  }
+  s.dataset.n = +s.dataset.n + n;
+  s.innerHTML = `<span class="gem">💎</span><span><b>+${s.dataset.n} more rare finds</b><div class="small muted">See the 💎 records in the queue</div></span><button type="button" aria-label="Dismiss">✕</button>`;
+  clearTimeout(s._t); s._t = setTimeout(() => s.remove(), 20000);
 }
 // Browsers only allow vibration after the user has interacted with the page.
 function buzz(p) { if (navigator.vibrate && navigator.userActivation?.hasBeenActive) navigator.vibrate(p); }
 function rareAlert(it) {
   const r = it.rare, what = `${r.artist || "?"} – ${r.title || "?"}`, why = (r.reasons || []).join(" · ");
   const a = document.createElement("a");
-  a.className = "alert"; a.href = `#item/${it.id}`; a.setAttribute("role", "alert");
+  a.className = "alert"; a.href = `#item/${it.id}`; a.setAttribute("role", "alert"); a.dataset.item = it.id;
   a.innerHTML = `<span class="gem">💎</span><span><b>Rare find!</b> ${esc(what)}<div class="small muted">${esc(why)}</div></span><button type="button" aria-label="Dismiss">✕</button>`;
   pushAlert(a);
 }
