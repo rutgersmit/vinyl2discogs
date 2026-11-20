@@ -18,9 +18,11 @@ It's a mobile-first web app: run it on a home server and use it from your phone 
 docker run -d --name vinyl2discogs --restart unless-stopped -p 8765:8000 \
   -v "$PWD/data:/data" \
   -e DISCOGS_TOKEN=your-discogs-token \
-  -e ANTHROPIC_API_KEY=sk-ant-...   `# or: -e OLLAMA_URL=http://192.168.1.10:11434` \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
   ghcr.io/rutgersmit/vinyl2discogs:latest
 ```
+
+Using a local model instead? Replace the `ANTHROPIC_API_KEY` line with `-e OLLAMA_URL=http://<ollama-host>:11434`.
 
 **Docker Compose**
 
