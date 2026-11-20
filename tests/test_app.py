@@ -466,3 +466,88 @@ def test_db_migration_adds_rare_column(tmp_path):
     assert db.get(1)["rare"] is None and db.list(rare_only=True) == []
     db.update(1, rare={"release_id": 5})
     assert [i["id"] for i in db.list(rare_only=True)] == [1]
+
+
+def test_rare_alert_once_per_release_across_match_changes(env):
+    import respx
+    client, app, fake, vis, tmp = env
+    item_id = client.post("/api/items", files={"label": ("l.jpg", jpg(), "image/jpeg")}).json()["id"]
+    settings = Settings(discogs_token="tok", data_dir=tmp, anthropic_api_key="", vision_provider_env="claude",
+                        rare_webhook_url="http://hooks.local/rare")
+    app2 = create_app(settings, discogs_factory=lambda s: dg.DiscogsClient(s, transport=httpx.MockTransport(fake.handler),
+                                                                           min_interval=0),
+                      vision_factory=lambda name, s: vis, run_worker=False)
+    with respx.mock as mock, TestClient(app2) as c2:
+        hook = mock.post("http://hooks.local/rare").respond(204)
+        run_worker_once(app2)  # rare 111 -> alert
+        r = c2.post(f"/api/items/{item_id}/reprocess", json={"extracted": {"catno": "2311 175", "title": "Cut", "matrix_a": None}})
+        assert r.json()["candidates"][0]["id"] == 333 and r.json()["rare"] is None
+        c2.post(f"/api/items/{item_id}/reprocess", json={"extracted": dict(EXTRACTED)})  # back to rare 111
+        assert app2.state.db.get(item_id)["rare"]["release_id"] == 111
+        assert hook.call_count == 1
+
+
+def test_add_survives_failed_rarity_lookup_and_drops_stale_flag(env, monkeypatch):
+    client, app, fake, vis, tmp = env
+    item_id = client.post("/api/items", files={"label": ("l.jpg", jpg(), "image/jpeg")}).json()["id"]
+    item = run_worker_once(app)
+    assert item["rare"]["release_id"] == 111
+
+    async def unreachable(c, release_id):
+        raise httpx.ConnectError("boom", request=httpx.Request("GET", f"https://api.discogs.com/releases/{release_id}"))
+    monkeypatch.setattr(dg, "candidate_from_release_id", unreachable)
+    # 444 was picked via manual search, so it is not among the stored candidates.
+    r = client.post(f"/api/items/{item_id}/add", json={"release_id": 444, "folder_id": 1})
+    assert r.status_code == 200, r.text
+    saved = r.json()["item"]
+    assert saved["status"] == "added" and saved["release_id"] == 444 and saved["rare"] is None
+
+
+def test_add_reports_rarity_of_manual_pick(env):
+    client, app, fake, vis, tmp = env
+    item_id = client.post("/api/items", files={"label": ("l.jpg", jpg(), "image/jpeg")}).json()["id"]
+    app.state.db.update(item_id, status="review", candidates=[])  # e.g. nothing found; release picked via manual search
+    r = client.post(f"/api/items/{item_id}/add", json={"release_id": 111, "folder_id": 1})
+    assert r.status_code == 200, r.text
+    assert r.json()["item"]["rare"]["release_id"] == 111  # the UI raises the alert from this response
+
+
+def test_home_screen_icons(env):
+    client, app, fake, vis, tmp = env
+    html = client.get("/").text
+    assert 'rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"' in html
+    manifest = client.get("/static/manifest.webmanifest").json()
+    for icon in [{"src": "/static/icons/apple-touch-icon.png", "sizes": "180x180"}, *manifest["icons"]]:
+        r = client.get(icon["src"])
+        assert r.status_code == 200, icon["src"]
+        if icon["src"].endswith(".png"):
+            w, h = Image.open(io.BytesIO(r.content)).size
+            assert f"{w}x{h}" == icon["sizes"]
+
+
+def test_rare_alert_reservation_is_atomic_and_migration_seeds_history(tmp_path):
+    import sqlite3
+    import threading as th
+    from app.db import DB
+    db = DB(tmp_path / "a.sqlite")
+    item = db.create(photos=[])
+    results: list[bool] = []
+    ts = [th.Thread(target=lambda: results.append(db.reserve_rare_alert(item["id"], 111))) for _ in range(8)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    assert results.count(True) == 1 and db.get(item["id"])["rare_alerted"] == [111]
+    assert db.reserve_rare_alert(item["id"], 222) is True and db.get(item["id"])["rare_alerted"] == [111, 222]
+
+    # A database from the first rare-find version: `rare` set (webhook already sent), no history column yet.
+    p = tmp_path / "v1.sqlite"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+                " status TEXT NOT NULL DEFAULT 'pending', source TEXT NOT NULL DEFAULT 'upload', hint TEXT NOT NULL DEFAULT '',"
+                " provider TEXT, photos TEXT NOT NULL DEFAULT '[]', extracted TEXT, candidates TEXT, release_id INTEGER,"
+                " instance_id INTEGER, folder_id INTEGER, media_condition TEXT, sleeve_condition TEXT, notes TEXT, error TEXT,"
+                " error_info TEXT, rare TEXT)")
+    con.execute("""INSERT INTO items (created_at, updated_at, rare) VALUES ('x','x','{"release_id": 111}'), ('x','x',NULL)""")
+    con.commit(); con.close()
+    old = DB(p)
+    assert old.get(1)["rare_alerted"] == [111] and old.get(2)["rare_alerted"] is None
+    assert old.reserve_rare_alert(1, 111) is False
