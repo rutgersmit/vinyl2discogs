@@ -119,14 +119,16 @@
   .rarecard b { color: var(--rare); }
   .rarecard ul { margin: 6px 0 0; padding-left: 18px; }
   .rstat { font-size: 11.5px; color: var(--rare); margin-top: 4px; }
-  .alert { position: fixed; left: 50%; top: calc(max(10px, env(safe-area-inset-top)) + 52px); transform: translateX(-50%);
-    width: min(520px, calc(100vw - 24px)); z-index: 55; background: var(--rare-bg); border: 1px solid var(--rare);
+  #alerts { position: fixed; left: 50%; top: calc(max(10px, env(safe-area-inset-top)) + 52px); transform: translateX(-50%);
+    width: min(520px, calc(100vw - 24px)); z-index: 55; display: flex; flex-direction: column; gap: 8px; }
+  #alerts:empty { display: none; }
+  .alert { background: var(--rare-bg); border: 1px solid var(--rare);
     border-radius: var(--r); padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start;
     box-shadow: 0 8px 30px #000a; color: var(--text); text-decoration: none; animation: pop .25s ease-out; }
   .alert .gem { font-size: 22px; line-height: 1; }
   .alert b { color: var(--rare); }
   .alert button { margin-left: auto; padding: 2px 8px; background: none; border: 0; color: var(--muted); font-size: 18px; }
-  @keyframes pop { from { transform: translate(-50%, -10px); opacity: 0; } }
+  @keyframes pop { from { transform: translateY(-10px); opacity: 0; } }
   #bell { background: none; border: 0; padding: 6px; font-size: 16px; color: var(--muted); }
 </style>
 </head>
@@ -460,16 +462,42 @@ async function next(currentId) {
 /* ---------------- rare-find alerts ---------------- */
 // Polls for unhandled rare finds (also those found by the background worker) and alerts once per item+release.
 const seenRare = new Set(store.get("seenRare", []));
+const MAX_ALERTS = 3;
+const notifyOn = () => !!(window.Notification && Notification.permission === "granted" && store.get("notify", false));
 async function checkRare() {
-  if (document.hidden && !(window.Notification && Notification.permission === "granted")) return;
+  if (document.hidden && !notifyOn()) return;
   let items; try { items = (await api("/api/items?status=review&rare=true")).items; } catch { return; }
-  const fresh = items.filter(i => !seenRare.has(`${i.id}:${i.rare.release_id}`));
-  for (const it of fresh.reverse()) {
-    seenRare.add(`${it.id}:${it.rare.release_id}`);
-    if (location.hash === `#item/${it.id}` && !document.hidden) { buzz([80, 60, 80]); continue; }
-    rareAlert(it);
+  const fresh = items.filter(i => !seenRare.has(`${i.id}:${i.rare.release_id}`)).reverse();
+  if (!fresh.length) return;
+  // Every fresh record is presented below: as its own alert, inside the "+N more" summary, or as the open page.
+  for (const it of fresh) seenRare.add(`${it.id}:${it.rare.release_id}`);
+  store.set("seenRare", [...seenRare].slice(-500));
+  const show = fresh.filter(it => document.hidden || location.hash !== `#item/${it.id}`);
+  if (show.length < fresh.length) buzz([80, 60, 80]);  // the one you're looking at already shows its banner
+  if (!show.length) return;
+  show.slice(0, MAX_ALERTS).forEach(rareAlert);
+  if (show.length > MAX_ALERTS) rareSummary(show.length - MAX_ALERTS);
+  buzz([120, 80, 120, 80, 240]);
+  if (notifyOn() && document.hidden) {
+    const one = show.length === 1 ? show[0] : null;
+    try { const n = new Notification(one ? "💎 Rare find" : `💎 ${show.length} rare finds`, {
+        body: one ? `${one.rare.artist || "?"} – ${one.rare.title || "?"}\n${(one.rare.reasons || []).join(" · ")}`
+                  : show.map(i => `${i.rare.artist || "?"} – ${i.rare.title || "?"}`).join("\n"),
+        tag: one ? `rare-${one.id}` : "rare-batch" });
+      n.onclick = () => { window.focus(); location.hash = one ? `item/${one.id}` : "queue"; n.close(); }; } catch {}
   }
-  if (fresh.length) store.set("seenRare", [...seenRare].slice(-500));
+}
+function pushAlert(a) {
+  const box = $("#alerts"), close = () => a.remove();
+  a.onclick = e => { if (e.target.tagName === "BUTTON") e.preventDefault(); close(); };
+  box.prepend(a); while (box.children.length > MAX_ALERTS + 1) box.lastElementChild.remove();
+  setTimeout(close, 20000);
+}
+function rareSummary(n) {
+  const a = document.createElement("a");
+  a.className = "alert"; a.href = "#queue"; a.setAttribute("role", "alert");
+  a.innerHTML = `<span class="gem">💎</span><span><b>+${n} more rare finds</b><div class="small muted">See the 💎 records in the queue</div></span><button type="button" aria-label="Dismiss">✕</button>`;
+  pushAlert(a);
 }
 // Browsers only allow vibration after the user has interacted with the page.
 function buzz(p) { if (navigator.vibrate && navigator.userActivation?.hasBeenActive) navigator.vibrate(p); }
@@ -478,21 +506,16 @@ function rareAlert(it) {
   const a = document.createElement("a");
   a.className = "alert"; a.href = `#item/${it.id}`; a.setAttribute("role", "alert");
   a.innerHTML = `<span class="gem">💎</span><span><b>Rare find!</b> ${esc(what)}<div class="small muted">${esc(why)}</div></span><button type="button" aria-label="Dismiss">✕</button>`;
-  const close = () => a.remove();
-  a.onclick = e => { if (e.target.tagName === "BUTTON") e.preventDefault(); close(); };
-  $("#alerts").replaceChildren(a); setTimeout(close, 15000);
-  buzz([120, 80, 120, 80, 240]);
-  if (window.Notification && Notification.permission === "granted" && document.hidden) {
-    try { const n = new Notification("💎 Rare find", { body: `${what}\n${why}`, tag: `rare-${it.id}` });
-      n.onclick = () => { window.focus(); location.hash = `item/${it.id}`; n.close(); }; } catch {}
-  }
+  pushAlert(a);
 }
 function setupBell() {
   const b = $("#bell"); if (!window.Notification) return;
-  const paint = () => { b.hidden = Notification.permission === "denied"; b.textContent = Notification.permission === "granted" ? "🔔" : "🔕"; };
+  // Browser permission is the capability; the app-level "notify" preference is the on/off switch.
+  const paint = () => { b.hidden = Notification.permission === "denied"; b.textContent = notifyOn() ? "🔔" : "🔕"; };
   b.onclick = async () => {
     if (Notification.permission === "default") await Notification.requestPermission();
-    paint(); toast(Notification.permission === "granted" ? "You'll get a notification for rare finds" : "Notifications are off", 2500);
+    store.set("notify", Notification.permission === "granted" && !notifyOn());
+    paint(); toast(notifyOn() ? "You'll get a notification for rare finds" : "Rare-find notifications are off", 2500);
   };
   paint();
 }

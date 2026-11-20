@@ -137,16 +137,23 @@ def create_app(
             if pick is None:  # picked via manual search: one lookup, usually served from the release cache
                 try:
                     pick = await dg.candidate_from_release_id(client(), release_id)
-                except dg.DiscogsError as e:
+                except (dg.DiscogsError, httpx.HTTPError) as e:  # optional enrichment: never block the add
                     log.warning("Rarity lookup for release %s failed: %s", release_id, e)
-                    return item.get("rare")
+                    prev = item.get("rare")
+                    keep = prev if prev and prev.get("release_id") == release_id else None
+                    db.update(item["id"], rare=keep)
+                    return keep
         else:
             pick = candidates[0] if candidates else None
         info = rare_info(pick) if pick and (pick.get("rarity") or {}).get("rare") else None
-        prev = item.get("rare") or {}
-        db.update(item["id"], rare=info)
-        if info and info["release_id"] != prev.get("release_id"):
+        alerted = list(item.get("rare_alerted") or [])
+        fields: dict[str, Any] = {"rare": info}
+        if info and info["release_id"] not in alerted:
+            fields["rare_alerted"] = [*alerted, info["release_id"]]
+            db.update(item["id"], **fields)
             await notify_rare(item["id"], info)
+        else:
+            db.update(item["id"], **fields)
         return info
 
     # ---- worker ---------------------------------------------------------------

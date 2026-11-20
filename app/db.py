@@ -18,7 +18,7 @@ from typing import Any
 #   error       -> processing failed
 STATUSES = ("pending", "processing", "review", "added", "not_found", "skipped", "error")
 
-JSON_COLS = ("photos", "extracted", "candidates", "error_info", "rare")
+JSON_COLS = ("photos", "extracted", "candidates", "error_info", "rare", "rare_alerted")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS items (
     notes TEXT,
     error TEXT,
     error_info TEXT,
-    rare TEXT
+    rare TEXT,
+    rare_alerted TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_items_status ON items(status);
 """
@@ -59,7 +60,7 @@ class DB:
         self._conn.executescript(SCHEMA)
         # Lightweight migrations for databases created by older versions.
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(items)")}
-        for col in ("error_info", "rare"):
+        for col in ("error_info", "rare", "rare_alerted"):
             if col not in cols:
                 self._conn.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
         self._lock = threading.Lock()
