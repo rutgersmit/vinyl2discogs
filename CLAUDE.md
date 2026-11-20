@@ -7,10 +7,11 @@ A FastAPI app that identifies vinyl records from photos (cover / label / runout)
 
 ## Layout
 - `app/main.py`: `create_app()` factory. It wires the API routes, the worker loop, inbox import, CSV export and optional basic auth. Dependencies (Discogs client, vision provider) are injectable via factory arguments; the tests rely on this.
-- `app/vision.py`: the extraction prompt, `ClaudeVision` (Anthropic SDK) and `OllamaVision` (`/api/chat` with `format: json`). `normalize_extracted()` defines the JSON shape that every other module depends on.
+- `app/vision.py`: the extraction prompt, `ClaudeVision` (Anthropic SDK), `OpenAIVision` (Responses API over httpx, strict `json_schema` output from `EXTRACT_SCHEMA`) and `OllamaVision` (`/api/chat` with `format: json`). `normalize_extracted()` defines the JSON shape that every other module depends on; keep `EXTRACT_SCHEMA` in sync with `FIELDS`.
+- `app/errors.py`: `describe()` maps exceptions to `{title, hint, detail, scope}` for the UI. When adding a provider or failure mode, add a mapping and a test; the UI never shows raw exceptions except under "Technical details".
 - `app/discogs.py`: `DiscogsClient`, an async httpx client with throttling and 429 backoff. `find_candidates()` holds the search strategy and scoring; `matrix_overlap()` compares runouts.
 - `app/db.py`: a single `items` table with JSON columns; the statuses are documented at the top of the file.
-- `app/config.py`: settings from env vars. `vision_provider` auto-selects claude/ollama when `VISION_PROVIDER` is empty.
+- `app/config.py`: settings from env vars. `vision_provider` auto-selects claude → openai → ollama when `VISION_PROVIDER` is empty.
 - `app/static/index.html`: vanilla JS, hash routing (`#new`, `#queue`, `#item/<id>`), no build step.
 
 ## Commands
@@ -30,7 +31,8 @@ docker compose up -d --build                           # after uncommenting `bui
 ## Not yet verified against live services
 Development used mocked services only, so these still need checking against the real ones:
 - the real Discogs responses for `/users/{u}/collection/fields` and the instance field `POST` (JSON body `{"value": ...}`),
-- Claude and Ollama extraction quality on real labels and runouts; prompt tuning is likely,
+- Claude, OpenAI and Ollama extraction quality on real labels and runouts; prompt tuning is likely,
+- the OpenAI Responses request against the live API (default model `gpt-6.1-terra`),
 - camera capture on iOS and Android behind HTTPS.
 
 ## Ideas / backlog

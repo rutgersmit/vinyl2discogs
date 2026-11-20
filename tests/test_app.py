@@ -268,3 +268,118 @@ def test_unwritable_data_dir_exits_with_hint(tmp_path, monkeypatch, caplog):
     assert exc.value.code == 1
     msg = caplog.text
     assert "Cannot write to the data folder" in msg and "docker compose pull" in msg and "PUID/PGID" in msg
+
+
+def _anthropic_error(cls_name, status, message):
+    import anthropic
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    body = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    return getattr(anthropic, cls_name)(message, response=httpx.Response(status, request=req, json=body), body=body)
+
+
+def test_error_descriptions(tmp_path):
+    from app.errors import describe
+    s = Settings(data_dir=tmp_path, claude_model="claude-x", ollama_url="http://ollama:11434", ollama_model="m")
+
+    i = describe(_anthropic_error("BadRequestError", 400, "Your credit balance is too low to access the Anthropic API."), s, "claude")
+    assert i["title"] == "Your Anthropic account is out of credit" and i["scope"] == "provider"
+    assert "Plans & Billing" in i["hint"] and "credit balance" in i["detail"]
+    assert describe(_anthropic_error("AuthenticationError", 401, "invalid x-api-key"), s)["title"] == "The Anthropic API key was rejected"
+    assert "claude-x" in describe(_anthropic_error("NotFoundError", 404, "model: claude-x"), s)["title"]
+
+    req = httpx.Request("POST", "http://ollama:11434/api/chat")
+    assert describe(httpx.ConnectError("refused", request=req), s, "ollama")["title"].startswith("Can't reach Ollama")
+    nf = httpx.HTTPStatusError("404", request=req, response=httpx.Response(404, request=req))
+    assert "ollama pull m" in describe(nf, s, "ollama")["hint"]
+
+    assert describe(dg.DiscogsError("x", 401), s)["title"] == "Discogs rejected the token"
+    assert describe(ValueError("No JSON in model response: 'sorry'"), s)["title"] == "The model's answer couldn't be read"
+    assert describe(KeyError("boom"), s)["title"] == "Something went wrong"
+
+
+def test_worker_stores_friendly_error_and_retry_all(env):
+    client, app, fake, vis, tmp = env
+    ids = [client.post("/api/items", files={"label": ("l.jpg", jpg(), "image/jpeg")}).json()["id"] for _ in range(2)]
+
+    async def broke(*a, **kw):
+        raise _anthropic_error("BadRequestError", 400, "Your credit balance is too low to access the Anthropic API.")
+    vis.extract = broke
+
+    import asyncio
+
+    for _ in ids:
+        asyncio.run(app.state.run_item(app.state.db.claim_next()))
+    item = client.get(f"/api/items/{ids[0]}").json()
+    assert item["status"] == "error" and item["error"] == "Your Anthropic account is out of credit"
+    assert item["error_info"]["scope"] == "provider"
+
+    assert client.post("/api/items/retry-errors").json()["requeued"] == 2
+    item = client.get(f"/api/items/{ids[0]}").json()
+    assert item["status"] == "pending" and item["error"] is None and item["error_info"] is None
+
+
+def test_db_migration_adds_error_info(tmp_path):
+    import sqlite3
+    from app.db import DB
+    p = tmp_path / "old.sqlite"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+                " status TEXT NOT NULL DEFAULT 'pending', source TEXT NOT NULL DEFAULT 'upload', hint TEXT NOT NULL DEFAULT '',"
+                " provider TEXT, photos TEXT NOT NULL DEFAULT '[]', extracted TEXT, candidates TEXT, release_id INTEGER,"
+                " instance_id INTEGER, folder_id INTEGER, media_condition TEXT, sleeve_condition TEXT, notes TEXT, error TEXT)")
+    con.execute("INSERT INTO items (created_at, updated_at, status, error) VALUES ('x','x','error','BadRequestError: ...')")
+    con.commit(); con.close()
+    db = DB(p)
+    assert db.get(1)["error_info"] is None
+    db.update(1, error_info={"title": "t"})
+    assert db.get(1)["error_info"] == {"title": "t"}
+
+
+def test_openai_provider(tmp_path):
+    import asyncio
+    from app.errors import describe
+    from app.vision import EXTRACT_SCHEMA, OpenAIError, OpenAIVision
+
+    img = tmp_path / "a.jpg"
+    img.write_bytes(jpg())
+    s = Settings(data_dir=tmp_path, openai_api_key="sk-oa", openai_model="gpt-test")
+    seen = {}
+
+    def ok(req: httpx.Request) -> httpx.Response:
+        seen["url"], seen["auth"], seen["body"] = str(req.url), req.headers["authorization"], json.loads(req.content)
+        return httpx.Response(200, json={"output": [
+            {"type": "reasoning", "summary": []},
+            {"type": "message", "content": [{"type": "output_text", "text": json.dumps(
+                {**{k: None for k in EXTRACT_SCHEMA["required"]}, "artist": "Nina Simone",
+                 "label": "Capri", "catno": "CA 160", "year": None, "confidence": "high"})}]},
+        ]})
+
+    out = asyncio.run(OpenAIVision(s, transport=httpx.MockTransport(ok)).extract([img, img], ["cover", "label"], "hint"))
+    assert out["artist"] == "Nina Simone" and out["catno"] == "CA 160" and out["confidence"] == "high"
+    assert seen["url"] == "https://api.openai.com/v1/responses" and seen["auth"] == "Bearer sk-oa"
+    body = seen["body"]
+    assert body["model"] == "gpt-test" and body["text"]["format"]["type"] == "json_schema"
+    assert body["text"]["format"]["strict"] is True
+    assert [c["type"] for c in body["input"][0]["content"]] == ["input_image", "input_image", "input_text"]
+    assert body["input"][0]["content"][0]["image_url"].startswith("data:image/jpeg;base64,")
+    # strict mode requires every property to be listed as required
+    assert set(EXTRACT_SCHEMA["required"]) == set(EXTRACT_SCHEMA["properties"])
+
+    def quota(req):
+        return httpx.Response(429, json={"error": {"message": "You exceeded your current quota", "type": "insufficient_quota",
+                                                   "code": "insufficient_quota"}})
+    with pytest.raises(OpenAIError) as e:
+        asyncio.run(OpenAIVision(s, transport=httpx.MockTransport(quota)).extract([img], [""], ""))
+    assert describe(e.value, s, "openai")["title"] == "Your OpenAI account is out of credit"
+    assert describe(OpenAIError(401, "bad key", "invalid_api_key"), s, "openai")["title"] == "The OpenAI API key was rejected"
+    assert "gpt-test" in describe(OpenAIError(404, "nope", "model_not_found"), s, "openai")["title"]
+    assert describe(OpenAIError(429, "slow down", "rate_limit_exceeded"), s, "openai")["title"] == "OpenAI rate limit reached"
+
+
+def test_provider_autodetect_with_openai(tmp_path):
+    from app.vision import available_providers
+    s = Settings(data_dir=tmp_path, anthropic_api_key="", openai_api_key="k", ollama_url="http://x")
+    assert s.vision_provider == "openai"
+    assert available_providers(s) == ["openai", "ollama"]
+    s = Settings(data_dir=tmp_path, anthropic_api_key="a", openai_api_key="k", ollama_url="")
+    assert s.vision_provider == "claude" and available_providers(s) == ["claude", "openai"]

@@ -2,7 +2,7 @@
 
 Catalogue old vinyl into your Discogs collection by taking photos. vinyl2discogs:
 
-1. reads the cover, centre label and runout with a vision model (Claude or a local Ollama model),
+1. reads the cover, centre label and runout with a vision model (Claude, OpenAI or a local Ollama model),
 2. finds the matching **pressing** on Discogs,
 3. adds it to your collection with media/sleeve condition once you confirm.
 
@@ -22,7 +22,7 @@ docker run -d --name vinyl2discogs --restart unless-stopped -p 8765:8000 \
   ghcr.io/rutgersmit/vinyl2discogs:latest
 ```
 
-Using a local model instead? Replace the `ANTHROPIC_API_KEY` line with `-e OLLAMA_URL=http://<ollama-host>:11434`.
+Using OpenAI or a local model instead? Replace the `ANTHROPIC_API_KEY` line with `-e OPENAI_API_KEY=sk-...` or `-e OLLAMA_URL=http://<ollama-host>:11434`.
 
 **Docker Compose**
 
@@ -30,7 +30,7 @@ Using a local model instead? Replace the `ANTHROPIC_API_KEY` line with `-e OLLAM
 mkdir vinyl2discogs && cd vinyl2discogs
 curl -O https://raw.githubusercontent.com/rutgersmit/vinyl2discogs/main/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/rutgersmit/vinyl2discogs/main/.env.example
-# edit .env: DISCOGS_TOKEN + ANTHROPIC_API_KEY and/or OLLAMA_URL
+# edit .env: DISCOGS_TOKEN + at least one of ANTHROPIC_API_KEY, OPENAI_API_KEY, OLLAMA_URL
 docker compose up -d
 ```
 
@@ -40,9 +40,10 @@ Open `http://<your-server>:8765` on your phone and add it to your home screen.
 |---|---|
 | `DISCOGS_TOKEN` | https://www.discogs.com/settings/developers → *Generate new token* |
 | `ANTHROPIC_API_KEY` | https://console.anthropic.com |
+| `OPENAI_API_KEY` | https://platform.openai.com/api-keys |
 | `OLLAMA_URL` | your Ollama server, e.g. `http://192.168.1.10:11434`, with a vision model pulled (`ollama pull qwen2.5vl:7b`) |
 
-You need at least one of `ANTHROPIC_API_KEY` or `OLLAMA_URL`. If both are set, Claude is the default, and you can switch per record in the UI. All other settings are optional; see [.env.example](.env.example).
+You need at least one of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OLLAMA_URL`. With several configured, the default is the first one in that order (override with `VISION_PROVIDER`), and you can switch per record in the UI. Models are configurable with `CLAUDE_MODEL`, `OPENAI_MODEL` and `OLLAMA_MODEL`. `OPENAI_BASE_URL` accepts any endpoint that speaks the OpenAI Responses API. All other settings are optional; see [.env.example](.env.example).
 
 Photos and the queue database live in `./data`. The container fixes the folder's ownership on start and runs as UID/GID 1000. Set `PUID`/`PGID` if your host user has different IDs and you want to manage `data/inbox` from the host.
 
@@ -113,7 +114,8 @@ When adding a record, vinyl2discogs:
 
 - The Discogs API can't create new releases. Mark such records as **Not in Discogs** and export them as CSV from the *Queue* view. The export includes everything that was extracted, so you can submit those releases on the website.
 - Discogs allows 60 requests/minute with a token, and one record takes roughly 4–12 requests. The client throttles itself and backs off on HTTP 429.
-- Small local vision models usually read covers and labels fine, but struggle with hand-etched runouts. Claude is noticeably better there.
+- Small local vision models usually read covers and labels fine, but struggle with hand-etched runouts. The hosted models (Claude, OpenAI) are noticeably better there.
+- When a provider fails (no credit, bad key, unreachable), the record shows what went wrong and how to fix it, with buttons to retry or read it with another configured provider. *Queue → Errors* can retry all failed records at once.
 
 ## Development
 

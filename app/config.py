@@ -19,10 +19,13 @@ class Settings:
     user_agent: str = field(default_factory=lambda: _env("USER_AGENT", "vinyl2discogs/1.0 +https://github.com/rutgersmit/vinyl2discogs"))
 
     # Vision
-    # empty = auto: claude if an API key is set, otherwise ollama
+    # empty = auto: claude, then openai (whichever has an API key), otherwise ollama
     vision_provider_env: str = field(default_factory=lambda: _env("VISION_PROVIDER").lower())
     anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
     claude_model: str = field(default_factory=lambda: _env("CLAUDE_MODEL", "claude-sonnet-5-5"))
+    openai_api_key: str = field(default_factory=lambda: _env("OPENAI_API_KEY"))
+    openai_model: str = field(default_factory=lambda: _env("OPENAI_MODEL", "gpt-6.1-terra"))
+    openai_base_url: str = field(default_factory=lambda: _env("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     ollama_url: str = field(default_factory=lambda: _env("OLLAMA_URL"))
     ollama_model: str = field(default_factory=lambda: _env("OLLAMA_MODEL", "qwen2.5vl:7b"))
     max_image_px: int = field(default_factory=lambda: int(_env("MAX_IMAGE_PX", "1568")))
@@ -37,7 +40,11 @@ class Settings:
     def vision_provider(self) -> str:
         if self.vision_provider_env:
             return self.vision_provider_env
-        return "claude" if self.anthropic_api_key or not self.ollama_url else "ollama"
+        if self.anthropic_api_key:
+            return "claude"
+        if self.openai_api_key:
+            return "openai"
+        return "ollama" if self.ollama_url else "claude"
 
     @property
     def photos_dir(self) -> Path:

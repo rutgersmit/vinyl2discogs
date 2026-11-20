@@ -15,7 +15,9 @@ API = "https://api.discogs.com"
 
 
 class DiscogsError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class DiscogsClient:
@@ -64,9 +66,9 @@ class DiscogsClient:
                 await asyncio.sleep(float(r.headers.get("Retry-After", 30)) * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise DiscogsError(f"{method} {url} -> {r.status_code}: {r.text[:300]}")
+                raise DiscogsError(f"{method} {url} -> {r.status_code}: {r.text[:300]}", r.status_code)
             return r.json() if r.content else {}
-        raise DiscogsError(f"{method} {url}: rate limited, gave up after retries")
+        raise DiscogsError(f"{method} {url}: rate limited, gave up after retries", 429)
 
     # ---- account / collection -------------------------------------------------
     async def username(self) -> str:

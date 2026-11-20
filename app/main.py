@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import discogs as dg
-from . import vision
+from . import errors, vision
 from .config import Settings, get_settings
 from .db import DB
 
@@ -108,7 +108,7 @@ def create_app(
             try:
                 state["discogs"] = discogs_factory(settings)
             except dg.DiscogsError as e:
-                raise HTTPException(503, str(e))
+                raise HTTPException(503, str(e)) from e
         return state["discogs"]
 
     # ---- worker ---------------------------------------------------------------
@@ -121,6 +121,17 @@ def create_app(
         cands = await dg.find_candidates(client(), extracted, detail_lookups=settings.detail_lookups)
         db.update(item["id"], candidates=cands, status="review")
 
+    async def run_item(item: dict) -> None:
+        """Process one claimed item; on failure store a friendly error instead of raising."""
+        try:
+            await process(item)
+        except Exception as e:  # noqa: BLE001
+            if isinstance(e, HTTPException) and isinstance(e.__cause__, Exception):
+                e = e.__cause__
+            info = errors.describe(e, settings, item.get("provider") or settings.vision_provider)
+            log.warning("Item %s failed: %s | %s", item["id"], info["title"], info["detail"])
+            db.update(item["id"], status="error", error=info["title"], error_info=info)
+
     async def worker_loop() -> None:
         while True:
             item = db.claim_next()
@@ -131,13 +142,7 @@ def create_app(
                 except asyncio.TimeoutError:
                     pass
                 continue
-            try:
-                await process(item)
-            except HTTPException as e:
-                db.update(item["id"], status="error", error=str(e.detail))
-            except Exception as e:  # noqa: BLE001
-                log.exception("Processing item %s failed", item["id"])
-                db.update(item["id"], status="error", error=f"{type(e).__name__}: {e}")
+            await run_item(item)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -151,6 +156,14 @@ def create_app(
     app = FastAPI(title="vinyl2discogs", lifespan=lifespan)
     app.state.db = db
     app.state.process = process
+    app.state.run_item = run_item
+
+    @app.exception_handler(dg.DiscogsError)
+    async def discogs_error(request: Request, exc: dg.DiscogsError):
+        info = errors.describe(exc, settings)
+        log.warning("Discogs error on %s: %s", request.url.path, info["detail"])
+        return JSONResponse({"detail": f"{info['title']}. {info['hint']}", "error_info": info},
+                            status_code=exc.status if exc.status in (401, 429) else 502)
 
     # ---- optional basic auth -------------------------------------------------
     if settings.app_password:
@@ -257,6 +270,12 @@ def create_app(
         wake()
         return {"created": created}
 
+    @app.post("/api/items/retry-errors")
+    async def retry_errors():
+        n = db.requeue_errors()
+        wake()
+        return {"requeued": n}
+
     @app.get("/api/items")
     async def list_items(status: str = ""):
         statuses = [s for s in status.split(",") if s] or None
@@ -282,8 +301,8 @@ def create_app(
             ex = vision.normalize_extracted({**(item.get("extracted") or {}), **body.extracted})
             ex["confidence"] = "high"  # corrected by the user
             cands = await dg.find_candidates(client(), ex, detail_lookups=settings.detail_lookups)
-            return db.update(item_id, extracted=ex, candidates=cands, status="review", error=None)
-        fields: dict[str, Any] = {"status": "pending", "error": None}
+            return db.update(item_id, extracted=ex, candidates=cands, status="review", error=None, error_info=None)
+        fields: dict[str, Any] = {"status": "pending", "error": None, "error_info": None}
         if body.provider:
             fields["provider"] = body.provider
         if body.hint is not None:

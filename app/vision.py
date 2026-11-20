@@ -1,4 +1,4 @@
-"""Read record photos with a vision model: Claude (Anthropic API) or a local model via Ollama."""
+"""Read record photos with a vision model: Claude (Anthropic), OpenAI, or a local model via Ollama."""
 from __future__ import annotations
 
 import base64
@@ -133,6 +133,63 @@ class ClaudeVision:
         return _parse_json(text)
 
 
+# JSON schema for OpenAI structured outputs (strict mode: every key required, null allowed).
+_S, _N = {"type": ["string", "null"]}, {"type": ["integer", "null"]}
+EXTRACT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [*FIELDS, "confidence"],
+    "properties": {**{k: _S for k in FIELDS if k != "year"}, "year": _N,
+                   "confidence": {"type": "string", "enum": ["high", "medium", "low"]}},
+}
+
+
+class OpenAIError(RuntimeError):
+    def __init__(self, status: int, message: str, code: str | None = None):
+        super().__init__(f"OpenAI API {status}: {message}")
+        self.status, self.message, self.code = status, message, code
+
+
+class OpenAIVision:
+    """OpenAI Responses API. OPENAI_BASE_URL can point at any Responses-compatible endpoint."""
+
+    name = "openai"
+
+    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None):
+        if not settings.openai_api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set")
+        self._key = settings.openai_api_key
+        self._model = settings.openai_model
+        self._url = settings.openai_base_url.rstrip("/") + "/responses"
+        self._max_px = settings.max_image_px
+        self._transport = transport
+
+    async def extract(self, images: list[Path], roles: list[str], hint: str) -> dict[str, Any]:
+        content: list[dict[str, Any]] = [
+            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{_image_to_b64_jpeg(p, self._max_px)}",
+             "detail": "high"}
+            for p in images
+        ]
+        content.append({"type": "input_text", "text": _user_text(hint, roles)})
+        payload = {
+            "model": self._model,
+            "input": [{"role": "user", "content": content}],
+            "text": {"format": {"type": "json_schema", "name": "record", "strict": True, "schema": EXTRACT_SCHEMA}},
+        }
+        async with httpx.AsyncClient(timeout=180, transport=self._transport) as c:
+            r = await c.post(self._url, json=payload, headers={"Authorization": f"Bearer {self._key}"})
+        data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code >= 400:
+            err = data.get("error") or {}
+            raise OpenAIError(r.status_code, err.get("message") or r.text[:300], err.get("code") or err.get("type"))
+        text = "".join(
+            part.get("text", "")
+            for item in data.get("output", []) if item.get("type") == "message"
+            for part in item.get("content", []) if part.get("type") == "output_text"
+        )
+        return _parse_json(text)
+
+
 class OllamaVision:
     name = "ollama"
 
@@ -165,6 +222,8 @@ def get_provider(name: str, settings: Settings) -> VisionProvider:
     name = (name or settings.vision_provider).lower()
     if name == "claude":
         return ClaudeVision(settings)
+    if name == "openai":
+        return OpenAIVision(settings)
     if name == "ollama":
         return OllamaVision(settings)
     raise ValueError(f"Unknown vision provider: {name}")
@@ -174,6 +233,8 @@ def available_providers(settings: Settings) -> list[str]:
     out = []
     if settings.anthropic_api_key:
         out.append("claude")
+    if settings.openai_api_key:
+        out.append("openai")
     if settings.ollama_url:
         out.append("ollama")
     return out
