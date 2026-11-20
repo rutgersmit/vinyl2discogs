@@ -6,6 +6,11 @@
 <meta name="theme-color" content="#16130f">
 <title>vinyl2discogs</title>
 <link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="vinyl2discogs">
 <style>
   :root {
     --bg: #16130f; --panel: #211d18; --panel2: #2b261f; --line: #3a332a;
@@ -447,6 +452,11 @@ async function doAdd(id, releaseId, force) {
   try {
     const r = await api(`/api/items/${id}/add`, { json: body });
     toast(r.warnings?.length ? "Added, but: " + r.warnings.join("; ") : "Added to your collection ✓", 3000);
+    // A pick from manual search only gets its rarity while adding, after the item has left review.
+    const it = r.item; if (it?.rare && !seenRare.has(`${it.id}:${it.rare.release_id}`)) {
+      seenRare.add(`${it.id}:${it.rare.release_id}`); store.set("seenRare", [...seenRare].slice(-500));
+      rareAlert(it); buzz([120, 80, 120, 80, 240]);
+    }
     loadStatus(); next(id);
   } catch (e) {
     if (e.status === 409) { b.disabled = false; b.textContent = `${e.message} Add anyway?`; b.onclick = () => doAdd(id, releaseId, true); }

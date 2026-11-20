@@ -501,3 +501,25 @@ def test_add_survives_failed_rarity_lookup_and_drops_stale_flag(env, monkeypatch
     assert r.status_code == 200, r.text
     saved = r.json()["item"]
     assert saved["status"] == "added" and saved["release_id"] == 444 and saved["rare"] is None
+
+
+def test_add_reports_rarity_of_manual_pick(env):
+    client, app, fake, vis, tmp = env
+    item_id = client.post("/api/items", files={"label": ("l.jpg", jpg(), "image/jpeg")}).json()["id"]
+    app.state.db.update(item_id, status="review", candidates=[])  # e.g. nothing found; release picked via manual search
+    r = client.post(f"/api/items/{item_id}/add", json={"release_id": 111, "folder_id": 1})
+    assert r.status_code == 200, r.text
+    assert r.json()["item"]["rare"]["release_id"] == 111  # the UI raises the alert from this response
+
+
+def test_home_screen_icons(env):
+    client, app, fake, vis, tmp = env
+    html = client.get("/").text
+    assert 'rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"' in html
+    manifest = client.get("/static/manifest.webmanifest").json()
+    for icon in [{"src": "/static/icons/apple-touch-icon.png", "sizes": "180x180"}, *manifest["icons"]]:
+        r = client.get(icon["src"])
+        assert r.status_code == 200, icon["src"]
+        if icon["src"].endswith(".png"):
+            w, h = Image.open(io.BytesIO(r.content)).size
+            assert f"{w}x{h}" == icon["sizes"]
