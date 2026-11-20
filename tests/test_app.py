@@ -23,11 +23,12 @@ SEARCH = [
      "label": ["Polydor"], "catno": "2311 175", "format": ["Vinyl", "LP"], "thumb": ""},
 ]
 RELEASES = {
-    111: {"id": 111, "identifiers": [{"type": "Matrix / Runout", "value": "2430 210 1Y 1 670 A1"},
+    111: {"id": 111, "community": {"have": 30, "want": 210}, "lowest_price": 145.0, "num_for_sale": 1,
+          "identifiers": [{"type": "Matrix / Runout", "value": "2430 210 1Y 1 670 A1"},
                                      {"type": "Matrix / Runout", "value": "2430 210 2Y 1 670 B1"}]},
     112: {"id": 112, "identifiers": [{"type": "Matrix / Runout", "value": "2430 210 1Y 2 380 CLUB"}]},
-    222: {"id": 222, "identifiers": [{"type": "Matrix / Runout", "value": "2406 112 A//1 420"}]},
-    333: {"id": 333, "identifiers": []},
+    222: {"id": 222, "community": {"have": 4100, "want": 300}, "lowest_price": 9.5, "num_for_sale": 80, "identifiers": [{"type": "Matrix / Runout", "value": "2406 112 A//1 420"}]},
+    333: {"id": 333, "community": {"have": 2500, "want": 90}, "lowest_price": 4.0, "num_for_sale": 60, "identifiers": []},
 }
 
 
@@ -383,3 +384,85 @@ def test_provider_autodetect_with_openai(tmp_path):
     assert available_providers(s) == ["openai", "ollama"]
     s = Settings(data_dir=tmp_path, anthropic_api_key="a", openai_api_key="k", ollama_url="")
     assert s.vision_provider == "claude" and available_providers(s) == ["claude", "openai"]
+
+
+# ---- rare finds ------------------------------------------------------------------
+def test_rarity_signals_and_thresholds(tmp_path):
+    s = Settings(data_dir=tmp_path, currency="EUR")
+    r = dg.rarity(RELEASES[111], s)
+    assert r["rare"] and r["have"] == 30 and r["want"] == 210
+    assert r["reasons"] == ["only 30 on Discogs", "sought after (210 want, 30 have)", "from 145 EUR, 1 for sale"]
+    assert dg.rarity(RELEASES[222], s)["rare"] is False
+    assert dg.rarity({"id": 1}, s) is None  # no community data -> unknown, not "common"
+    # every signal can be switched off
+    off = Settings(data_dir=tmp_path, rare_max_have=0, rare_min_want_ratio=0, rare_min_price=0)
+    assert dg.rarity(RELEASES[111], off)["rare"] is False
+    # few wants on an obscure release are not "sought after"
+    assert dg.rarity({"community": {"have": 1, "want": 5}}, Settings(data_dir=tmp_path, rare_max_have=0))["rare"] is False
+
+
+def test_rare_find_flags_item_and_alerts_once(env):
+    import respx
+    client, app, fake, vis, tmp = env
+    item_id = client.post("/api/items", files={"label": ("l.jpg", jpg(), "image/jpeg")}).json()["id"]
+    # The fixture's settings are frozen; patch the webhook URL in via a fresh app sharing the same fake.
+    settings = Settings(discogs_token="tok", data_dir=tmp, anthropic_api_key="", vision_provider_env="claude",
+                        rare_webhook_url="http://hooks.local/rare", currency="EUR")
+    app2 = create_app(settings, discogs_factory=lambda s: dg.DiscogsClient(s, transport=httpx.MockTransport(fake.handler),
+                                                                           min_interval=0),
+                      vision_factory=lambda name, s: vis, run_worker=False)
+    with respx.mock(assert_all_called=False) as mock, TestClient(app2) as c2:
+        hook = mock.post("http://hooks.local/rare").respond(204)
+        item = run_worker_once(app2)
+        assert item["id"] == item_id and item["candidates"][0]["id"] == 111
+        assert item["candidates"][0]["rarity"]["rare"] is True
+        assert item["rare"]["release_id"] == 111 and "only 30 on Discogs" in item["rare"]["reasons"]
+        assert hook.call_count == 1
+        sent = json.loads(hook.calls[0].request.content)
+        assert sent["event"] == "rare_find" and sent["release_id"] == 111 and sent["message"].startswith("Rare find: Golden Earring")
+
+        # Searching again with the same best match does not alert twice.
+        c2.post(f"/api/items/{item_id}/reprocess", json={"extracted": {"notes": "x"}})
+        assert hook.call_count == 1
+
+        # The UI polls for unhandled rare finds.
+        rare = c2.get("/api/items?status=review&rare=true").json()["items"]
+        assert [i["id"] for i in rare] == [item_id]
+
+        # Adding a common pressing instead clears the flag.
+        r = c2.post(f"/api/items/{item_id}/add", json={"release_id": 333, "folder_id": 1})
+        assert r.status_code == 200 and r.json()["item"]["rare"] is None
+        assert c2.get("/api/items?rare=true").json()["items"] == []
+
+
+def test_rare_webhook_failure_does_not_fail_item(env):
+    import respx
+    client, app, fake, vis, tmp = env
+    client.post("/api/items", files={"label": ("l.jpg", jpg(), "image/jpeg")})
+    settings = Settings(discogs_token="tok", data_dir=tmp, anthropic_api_key="", vision_provider_env="claude",
+                        rare_webhook_url="http://hooks.local/rare")
+    app2 = create_app(settings, discogs_factory=lambda s: dg.DiscogsClient(s, transport=httpx.MockTransport(fake.handler),
+                                                                           min_interval=0),
+                      vision_factory=lambda name, s: vis, run_worker=False)
+    with respx.mock as mock, TestClient(app2):
+        mock.post("http://hooks.local/rare").respond(500)
+        item = run_worker_once(app2)
+    assert item["status"] == "review" and item["rare"]["release_id"] == 111
+
+
+def test_db_migration_adds_rare_column(tmp_path):
+    import sqlite3
+    from app.db import DB
+    p = tmp_path / "old.sqlite"
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+                " status TEXT NOT NULL DEFAULT 'pending', source TEXT NOT NULL DEFAULT 'upload', hint TEXT NOT NULL DEFAULT '',"
+                " provider TEXT, photos TEXT NOT NULL DEFAULT '[]', extracted TEXT, candidates TEXT, release_id INTEGER,"
+                " instance_id INTEGER, folder_id INTEGER, media_condition TEXT, sleeve_condition TEXT, notes TEXT, error TEXT,"
+                " error_info TEXT)")
+    con.execute("INSERT INTO items (created_at, updated_at) VALUES ('x','x')")
+    con.commit(); con.close()
+    db = DB(p)
+    assert db.get(1)["rare"] is None and db.list(rare_only=True) == []
+    db.update(1, rare={"release_id": 5})
+    assert [i["id"] for i in db.list(rare_only=True)] == [1]

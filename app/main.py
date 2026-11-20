@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -111,6 +112,43 @@ def create_app(
                 raise HTTPException(503, str(e)) from e
         return state["discogs"]
 
+    # ---- rare finds -------------------------------------------------------------
+    def rare_info(cand: dict) -> dict:
+        r = cand.get("rarity") or {}
+        return {"release_id": cand["id"], "artist": cand.get("artist"), "title": cand.get("title"),
+                "url": cand.get("url"), "reasons": r.get("reasons", []), "have": r.get("have"),
+                "want": r.get("want"), "lowest_price": r.get("lowest_price"), "currency": settings.currency}
+
+    async def notify_rare(item_id: int, info: dict) -> None:
+        if not settings.rare_webhook_url:
+            return
+        msg = f"Rare find: {info['artist']} – {info['title']} ({'; '.join(info['reasons'])})"
+        payload = {"event": "rare_find", "message": msg, "text": msg, "item_id": item_id, **info}
+        try:
+            async with httpx.AsyncClient(timeout=10) as h:
+                (await h.post(settings.rare_webhook_url, json=payload)).raise_for_status()
+        except httpx.HTTPError as e:  # an alert must never fail the record itself
+            log.warning("Rare-find webhook failed for item %s: %s", item_id, e)
+
+    async def update_rare(item: dict, candidates: list[dict], release_id: int | None = None) -> dict | None:
+        """Flag the item when its best match (or the added release) is rare; alert once per release."""
+        if release_id:
+            pick = next((c for c in candidates if c["id"] == release_id and c.get("rarity")), None)
+            if pick is None:  # picked via manual search: one lookup, usually served from the release cache
+                try:
+                    pick = await dg.candidate_from_release_id(client(), release_id)
+                except dg.DiscogsError as e:
+                    log.warning("Rarity lookup for release %s failed: %s", release_id, e)
+                    return item.get("rare")
+        else:
+            pick = candidates[0] if candidates else None
+        info = rare_info(pick) if pick and (pick.get("rarity") or {}).get("rare") else None
+        prev = item.get("rare") or {}
+        db.update(item["id"], rare=info)
+        if info and info["release_id"] != prev.get("release_id"):
+            await notify_rare(item["id"], info)
+        return info
+
     # ---- worker ---------------------------------------------------------------
     async def process(item: dict) -> None:
         photos = [settings.photos_dir / p["path"] for p in item["photos"]]
@@ -119,6 +157,7 @@ def create_app(
         extracted = await provider.extract(photos, roles, item.get("hint", ""))
         db.update(item["id"], extracted=extracted, provider=provider.name)
         cands = await dg.find_candidates(client(), extracted, detail_lookups=settings.detail_lookups)
+        await update_rare(item, cands)
         db.update(item["id"], candidates=cands, status="review")
 
     async def run_item(item: dict) -> None:
@@ -210,6 +249,7 @@ def create_app(
             "providers": vision.available_providers(settings),
             "default_provider": settings.vision_provider,
             "default_folder_id": settings.discogs_default_folder_id,
+            "currency": settings.currency,
             "counts": db.counts(),
             "discogs_ok": False,
         }
@@ -277,9 +317,9 @@ def create_app(
         return {"requeued": n}
 
     @app.get("/api/items")
-    async def list_items(status: str = ""):
+    async def list_items(status: str = "", rare: bool = False):
         statuses = [s for s in status.split(",") if s] or None
-        return {"items": db.list(statuses), "counts": db.counts()}
+        return {"items": db.list(statuses, rare_only=rare), "counts": db.counts()}
 
     @app.get("/api/items/{item_id}")
     async def item_detail(item_id: int):
@@ -301,6 +341,7 @@ def create_app(
             ex = vision.normalize_extracted({**(item.get("extracted") or {}), **body.extracted})
             ex["confidence"] = "high"  # corrected by the user
             cands = await dg.find_candidates(client(), ex, detail_lookups=settings.detail_lookups)
+            await update_rare(item, cands)
             return db.update(item_id, extracted=ex, candidates=cands, status="review", error=None, error_info=None)
         fields: dict[str, Any] = {"status": "pending", "error": None, "error_info": None}
         if body.provider:
@@ -331,7 +372,7 @@ def create_app(
 
     @app.post("/api/items/{item_id}/add")
     async def add(item_id: int, body: AddIn):
-        get_item(item_id)
+        item = get_item(item_id)
         c = client()
         folder = body.folder_id or settings.discogs_default_folder_id
         if not body.force:
@@ -352,6 +393,7 @@ def create_app(
                     await c.set_field(folder, body.release_id, instance_id, field_ids[name], value)
                 except dg.DiscogsError as e:
                     warnings.append(f"{name}: {e}")
+        await update_rare(item, item.get("candidates") or [], body.release_id)
         item = db.update(
             item_id, status="added", release_id=body.release_id, instance_id=instance_id, folder_id=folder,
             media_condition=body.media_condition, sleeve_condition=body.sleeve_condition, notes=body.notes,

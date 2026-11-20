@@ -18,6 +18,17 @@ class Settings:
     discogs_default_folder_id: int = field(default_factory=lambda: int(_env("DISCOGS_FOLDER_ID", "1")))
     user_agent: str = field(default_factory=lambda: _env("USER_AGENT", "vinyl2discogs/1.0 +https://github.com/rutgersmit/vinyl2discogs"))
 
+    # Currency for marketplace prices (Discogs default is USD)
+    currency: str = field(default_factory=lambda: _env("DISCOGS_CURRENCY", "EUR").upper())
+
+    # Rare-find alerts: a match is flagged when any signal crosses its threshold (0 = signal off)
+    rare_max_have: int = field(default_factory=lambda: int(_env("RARE_MAX_HAVE", "50")))
+    rare_min_want_ratio: float = field(default_factory=lambda: float(_env("RARE_MIN_WANT_RATIO", "3")))
+    rare_min_want_count: int = field(default_factory=lambda: int(_env("RARE_MIN_WANT_COUNT", "25")))
+    rare_min_price: float = field(default_factory=lambda: float(_env("RARE_MIN_PRICE", "100")))
+    # Optional: POST a JSON message here on a rare find (Home Assistant webhook, ntfy, Slack-compatible, ...)
+    rare_webhook_url: str = field(default_factory=lambda: _env("RARE_WEBHOOK_URL"))
+
     # Vision
     # empty = auto: claude, then openai (whichever has an API key), otherwise ollama
     vision_provider_env: str = field(default_factory=lambda: _env("VISION_PROVIDER").lower())

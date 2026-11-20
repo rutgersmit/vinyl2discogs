@@ -111,6 +111,23 @@
     background: var(--bg); border-radius: 8px; padding: 8px; max-height: 180px; overflow: auto; margin: 6px 0 0; }
   .errtxt { color: var(--err); }
   .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+
+  /* rare finds */
+  :root { --rare: #c9a2ff; --rare-bg: #2c2140; --rare-line: #5b4483; }
+  .st.rare, .why span.rare { background: var(--rare-bg); color: var(--rare); }
+  .rarecard { margin-top: 14px; background: var(--rare-bg); border: 1px solid var(--rare-line); border-radius: var(--r); padding: 12px 14px; }
+  .rarecard b { color: var(--rare); }
+  .rarecard ul { margin: 6px 0 0; padding-left: 18px; }
+  .rstat { font-size: 11.5px; color: var(--rare); margin-top: 4px; }
+  .alert { position: fixed; left: 50%; top: calc(max(10px, env(safe-area-inset-top)) + 52px); transform: translateX(-50%);
+    width: min(520px, calc(100vw - 24px)); z-index: 55; background: var(--rare-bg); border: 1px solid var(--rare);
+    border-radius: var(--r); padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start;
+    box-shadow: 0 8px 30px #000a; color: var(--text); text-decoration: none; animation: pop .25s ease-out; }
+  .alert .gem { font-size: 22px; line-height: 1; }
+  .alert b { color: var(--rare); }
+  .alert button { margin-left: auto; padding: 2px 8px; background: none; border: 0; color: var(--muted); font-size: 18px; }
+  @keyframes pop { from { transform: translate(-50%, -10px); opacity: 0; } }
+  #bell { background: none; border: 0; padding: 6px; font-size: 16px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -120,9 +137,11 @@
     <a href="#new" data-nav="new">New</a>
     <a href="#queue" data-nav="queue">Queue<span class="badge" id="badge" hidden></span></a>
   </nav>
+  <button id="bell" type="button" title="Phone notifications for rare finds" hidden>🔕</button>
 </header>
 <main id="view"></main>
 <div class="toast" id="toast"></div>
+<div id="alerts"></div>
 
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -159,6 +178,7 @@ async function loadStatus() {
 async function route() {
   stopPoll();
   const h = location.hash.slice(1) || "new";
+  document.querySelectorAll(`#alerts [href="#${h}"]`).forEach(a => a.remove());
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", h.startsWith(a.dataset.nav)));
   if (h === "new") return viewNew();
   if (h === "queue") return viewQueue();
@@ -260,6 +280,7 @@ function li(it) {
   const ph = it.photos[0] ? `<img src="/photos/${esc(it.photos[0].path)}" loading="lazy">` : `<div class="ph"></div>`;
   return `<a class="li" href="#item/${it.id}">${ph}<div class="grow"><div class="t">${name}</div>
     <div class="small muted">${sub || "&nbsp;"}${top && it.status === "review" ? ` · best match ${top.score}` : ""}</div></div>
+    ${it.rare ? `<span class="st rare" title="${esc((it.rare.reasons || []).join("; "))}">💎 rare</span>` : ""}
     <span class="st ${it.status}">${STATUS_LABEL[it.status]}</span></a>`;
 }
 
@@ -279,7 +300,7 @@ async function viewItem(id) {
     S.poll = setTimeout(() => location.hash === `#item/${id}` && viewItem(id), 2000);
     return;
   }
-  html += errorCard(it);
+  html += errorCard(it) + rareCard(it);
 
   if (it.extracted || it.status !== "error") html += extractedForm(it);
   if (it.status === "added") {
@@ -358,6 +379,19 @@ function errorCard(it) {
     <details><summary>Technical details</summary><pre>${esc(i.detail)}</pre></details>
   </div>`;
 }
+function rareCard(it) {
+  const r = it.rare; if (!r) return "";
+  const verb = it.status === "added" ? "You added" : "The best match is";
+  return `<div class="rarecard">💎 <b>Possible rare find.</b> ${verb}
+    <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.artist)} – ${esc(r.title)} (r${r.release_id})</a>:
+    <ul>${(r.reasons || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
+    <div class="small muted" style="margin-top:6px">Check the matrix against the release before you trust this: a different pressing can be worth much less.</div></div>`;
+}
+function rareStats(r) {
+  if (!r) return "";
+  const price = r.lowest_price != null ? ` · from ${Math.round(r.lowest_price)} ${esc(S.status?.currency || "")}` : "";
+  return `<div class="rstat">${r.rare ? "💎 " : ""}${r.have} have · ${r.want} want${price}</div>`;
+}
 function extractedForm(it) {
   const e = it.extracted || {};
   const fld = (k, l) => `<div><label class="f">${l}</label><input data-ex="${k}" value="${esc(e[k] ?? "")}"></div>`;
@@ -377,13 +411,14 @@ function extractedForm(it) {
 }
 function candHtml(c, sel) {
   const img = c.thumb ? `<img src="${esc(c.thumb)}" loading="lazy" referrerpolicy="no-referrer">` : `<div class="ph"></div>`;
-  const why = (c.reasons || []).map(r => `<span class="${r.startsWith("matrix") ? "m" : ""}">${esc(r)}</span>`).join("");
+  const why = (c.rarity?.rare ? `<span class="rare" title="${esc(c.rarity.reasons.join("; "))}">💎 rare</span>` : "")
+    + (c.reasons || []).map(r => `<span class="${r.startsWith("matrix") ? "m" : ""}">${esc(r)}</span>`).join("");
   const mx = (c.matrix || []).length ? `<div class="mx">${c.matrix.map(esc).join("<br>")}</div>` : "";
   return `<div class="cand ${sel ? "sel" : ""}" data-id="${c.id}">${img}<div class="grow" style="min-width:0">
     <div class="row" style="flex-wrap:nowrap"><div class="t grow">${esc(c.artist)} – ${esc(c.title)}</div><div class="score">${c.score}</div></div>
     <div class="small">${esc((c.labels || []).join(", "))} · <b>${esc(c.catno || "")}</b></div>
     <div class="small muted">${esc([c.country, c.year, c.formats].filter(Boolean).join(" · "))} · <a href="${esc(c.url)}" target="_blank" rel="noopener">Discogs ↗</a></div>
-    <div class="why">${why}</div>${sel ? mx : ""}</div></div>`;
+    <div class="why">${why}</div>${sel ? rareStats(c.rarity) + mx : ""}</div></div>`;
 }
 function addBar() {
   const st = S.status || {}; const f = st.fields || {};
@@ -422,7 +457,50 @@ async function next(currentId) {
   location.hash = nxt ? `item/${nxt.id}` : "new";
 }
 
-loadStatus().then(route);
+/* ---------------- rare-find alerts ---------------- */
+// Polls for unhandled rare finds (also those found by the background worker) and alerts once per item+release.
+const seenRare = new Set(store.get("seenRare", []));
+async function checkRare() {
+  if (document.hidden && !(window.Notification && Notification.permission === "granted")) return;
+  let items; try { items = (await api("/api/items?status=review&rare=true")).items; } catch { return; }
+  const fresh = items.filter(i => !seenRare.has(`${i.id}:${i.rare.release_id}`));
+  for (const it of fresh.reverse()) {
+    seenRare.add(`${it.id}:${it.rare.release_id}`);
+    if (location.hash === `#item/${it.id}` && !document.hidden) { buzz([80, 60, 80]); continue; }
+    rareAlert(it);
+  }
+  if (fresh.length) store.set("seenRare", [...seenRare].slice(-500));
+}
+// Browsers only allow vibration after the user has interacted with the page.
+function buzz(p) { if (navigator.vibrate && navigator.userActivation?.hasBeenActive) navigator.vibrate(p); }
+function rareAlert(it) {
+  const r = it.rare, what = `${r.artist || "?"} – ${r.title || "?"}`, why = (r.reasons || []).join(" · ");
+  const a = document.createElement("a");
+  a.className = "alert"; a.href = `#item/${it.id}`; a.setAttribute("role", "alert");
+  a.innerHTML = `<span class="gem">💎</span><span><b>Rare find!</b> ${esc(what)}<div class="small muted">${esc(why)}</div></span><button type="button" aria-label="Dismiss">✕</button>`;
+  const close = () => a.remove();
+  a.onclick = e => { if (e.target.tagName === "BUTTON") e.preventDefault(); close(); };
+  $("#alerts").replaceChildren(a); setTimeout(close, 15000);
+  buzz([120, 80, 120, 80, 240]);
+  if (window.Notification && Notification.permission === "granted" && document.hidden) {
+    try { const n = new Notification("💎 Rare find", { body: `${what}\n${why}`, tag: `rare-${it.id}` });
+      n.onclick = () => { window.focus(); location.hash = `item/${it.id}`; n.close(); }; } catch {}
+  }
+}
+function setupBell() {
+  const b = $("#bell"); if (!window.Notification) return;
+  const paint = () => { b.hidden = Notification.permission === "denied"; b.textContent = Notification.permission === "granted" ? "🔔" : "🔕"; };
+  b.onclick = async () => {
+    if (Notification.permission === "default") await Notification.requestPermission();
+    paint(); toast(Notification.permission === "granted" ? "You'll get a notification for rare finds" : "Notifications are off", 2500);
+  };
+  paint();
+}
+setupBell();
+setInterval(checkRare, 8000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkRare(); });
+
+loadStatus().then(route).then(checkRare);
 </script>
 </body>
 </html>

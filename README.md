@@ -110,6 +110,32 @@ When adding a record, vinyl2discogs:
 - fills *Media Condition*, *Sleeve Condition* and *Notes*, with the options taken from your own collection fields,
 - remembers your last folder and condition choices for the next record.
 
+## Rare-find alerts
+
+While picking candidates, vinyl2discogs uses the community numbers Discogs already returns with each release (no extra API calls) to spot records worth a second look. The best match is flagged as a **possible rare find** when any of these is true:
+
+| Signal | Default | Setting |
+|---|---|---|
+| few copies in Discogs collections | ≤ 50 "have" | `RARE_MAX_HAVE` |
+| far more wanted than owned | want/have ≥ 3, with ≥ 25 "want" | `RARE_MIN_WANT_RATIO`, `RARE_MIN_WANT_COUNT` |
+| expensive on the marketplace | lowest price ≥ 100 | `RARE_MIN_PRICE` (in `DISCOGS_CURRENCY`, default EUR) |
+
+Set a threshold to `0` to switch that signal off.
+
+When a rare find turns up, also from the background queue:
+- a purple **Rare find!** alert pops up in the app (and your phone vibrates where the browser allows it),
+- tap the 🔕 bell in the header to also get a browser notification while the app is in the background,
+- the record gets a 💎 badge in the queue and a banner with the reasons on its page; candidates show have/want/price,
+- if `RARE_WEBHOOK_URL` is set, the app POSTs a JSON message to it, once per record and release:
+
+```json
+{"event": "rare_find", "message": "Rare find: Artist – Title (only 30 on Discogs; …)", "text": "…",
+ "item_id": 12, "release_id": 1234567, "artist": "…", "title": "…", "url": "https://www.discogs.com/release/1234567",
+ "reasons": ["only 30 on Discogs"], "have": 30, "want": 210, "lowest_price": 145.0, "currency": "EUR"}
+```
+
+A Home Assistant webhook automation can turn that into a phone push or a light flash. The flag is a hint, not an appraisal: it is only as good as the match, so check the matrix before you get excited.
+
 ## Limitations
 
 - The Discogs API can't create new releases. Mark such records as **Not in Discogs** and export them as CSV from the *Queue* view. The export includes everything that was extracted, so you can submit those releases on the website.
