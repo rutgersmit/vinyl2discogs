@@ -5,6 +5,9 @@ services:
     container_name: vinyl2discogs
     restart: unless-stopped
     env_file: .env
+    # environment:
+    #   PUID: 1000   # owner of ./data on the host (default 1000)
+    #   PGID: 1000
     ports:
       - "8765:8000"
     volumes:

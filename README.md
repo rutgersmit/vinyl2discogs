@@ -12,6 +12,18 @@ It's a mobile-first web app: run it on a home server and use it from your phone 
 
 ## Quick start
 
+**One-liner**
+
+```bash
+docker run -d --name vinyl2discogs --restart unless-stopped -p 8765:8000 \
+  -v "$PWD/data:/data" \
+  -e DISCOGS_TOKEN=your-discogs-token \
+  -e ANTHROPIC_API_KEY=sk-ant-...   `# or: -e OLLAMA_URL=http://192.168.1.10:11434` \
+  ghcr.io/rutgersmit/vinyl2discogs:latest
+```
+
+**Docker Compose**
+
 ```bash
 mkdir vinyl2discogs && cd vinyl2discogs
 curl -O https://raw.githubusercontent.com/rutgersmit/vinyl2discogs/main/docker-compose.yml
@@ -28,7 +40,9 @@ Open `http://<your-server>:8765` on your phone and add it to your home screen.
 | `ANTHROPIC_API_KEY` | https://console.anthropic.com |
 | `OLLAMA_URL` | your Ollama server, e.g. `http://192.168.1.10:11434`, with a vision model pulled (`ollama pull qwen2.5vl:7b`) |
 
-You need at least one of `ANTHROPIC_API_KEY` or `OLLAMA_URL`. If both are set, Claude is the default, and you can switch per record in the UI.
+You need at least one of `ANTHROPIC_API_KEY` or `OLLAMA_URL`. If both are set, Claude is the default, and you can switch per record in the UI. All other settings are optional; see [.env.example](.env.example).
+
+Photos and the queue database live in `./data`. The container fixes the folder's ownership on start and runs as UID/GID 1000. Set `PUID`/`PGID` if your host user has different IDs and you want to manage `data/inbox` from the host.
 
 Images are published for `linux/amd64` and `linux/arm64`, so a Raspberry Pi works too. To build the image yourself, uncomment `build: .` in `docker-compose.yml`.
 
